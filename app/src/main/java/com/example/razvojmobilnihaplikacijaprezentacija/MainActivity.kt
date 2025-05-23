@@ -53,6 +53,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -88,6 +90,8 @@ import androidx.compose.material3.Slider
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.media3.common.PlaybackException
 import androidx.media3.effect.Brightness
@@ -139,6 +143,12 @@ fun AppNavigation(navController: NavHostController, startDestinationFromIntent: 
         }
         composable("photo_viewer_screen") {
             PhotoViewerScreen(navController = navController)
+        }
+        composable("image_detail_screen/{imageUri}") { backStackEntry ->
+            val imageUriString = backStackEntry.arguments?.getString("imageUri")
+            imageUriString?.let {
+                ImageDetailScreen(navController = navController, imageUri = Uri.parse(it)) // Proslijedi i navController za natrag
+            }
         }
     }
 
@@ -1562,6 +1572,8 @@ fun PhotoViewerScreen(navController: NavHostController) {
                                 } else {
                                     // Ovdje možete implementirati prikaz slike preko cijelog zaslona
                                     Log.d("PhotoViewer", "Kliknuta slika: $uri")
+                                    val encodedUri = Uri.encode(uri.toString()) // URI se mora enkodirati za navigaciju
+                                    navController.navigate("image_detail_screen/$encodedUri")
                                     // navController.navigate("image_detail_screen/$uri") // Primjer
                                 }
                             },
@@ -1655,6 +1667,87 @@ fun GalleryImageItem(
                     )
                 }
             }
+        }
+    }
+}
+
+// TOP-LEVEL Composable funkcija
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ImageDetailScreen(navController: NavHostController, imageUri: Uri) {
+    val context = LocalContext.current
+
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    var rotation by remember { mutableFloatStateOf(0f) } // Dodano za potpunost iz videa, ali može se izostaviti
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Detalji Slike") },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                    }
+                },
+                actions = { // Gumb za resetiranje zooma i pozicije
+                    IconButton(onClick = {
+                        scale = 1f
+                        offset = Offset.Zero
+                        rotation = 0f
+                    }) {
+                        Icon(painterResource(id = android.R.drawable.ic_menu_zoom), contentDescription = "Resetiraj Zoom") // Primjer ikone
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        BoxWithConstraints( // Koristimo BoxWithConstraints da dobijemo maksimalne dimenzije
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+        ) {
+            val state = rememberTransformableState { zoomChange, panChange, rotationChange ->
+                scale = (scale * zoomChange).coerceIn(1f, 5f) // Ograniči zoom od 1x do 5x
+
+                rotation += rotationChange // Ako želite i rotaciju
+
+                // Logika za ograničavanje pomaka (panning) da slika ne izađe izvan ekrana
+                // Ovo je složeniji dio koji zahtijeva izračunavanje granica
+                // na temelju trenutne skale i dimenzija slike/kontejnera.
+                // Za jednostavnost, osnovni pomak:
+                // offset += panChange
+                // Detaljnija implementacija za ograničavanje pomaka (iz videa [3]):
+                val extraWidth = (scale - 1) * constraints.maxWidth
+                val extraHeight = (scale - 1) * constraints.maxHeight
+
+                val newOffsetXPx = offset.x + panChange.x
+                val newOffsetYPx = offset.y + panChange.y
+
+                offset = Offset(
+                    x = newOffsetXPx.coerceIn(-extraWidth / 2f, extraWidth / 2f),
+                    y = newOffsetYPx.coerceIn(-extraHeight / 2f, extraHeight / 2f)
+                )
+            }
+
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(imageUri)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = "Prikaz slike preko cijelog zaslona s mogućnošću zumiranja",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { // Primijeni transformacije
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                        rotationZ = rotation
+                    }
+                    .transformable(state = state), // Omogući transformacije (pinch, pan, rotate)
+                contentScale = ContentScale.Fit
+            )
         }
     }
 }
