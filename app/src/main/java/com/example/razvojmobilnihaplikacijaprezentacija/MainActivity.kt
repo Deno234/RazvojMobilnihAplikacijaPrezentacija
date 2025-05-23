@@ -1,14 +1,22 @@
 package com.example.razvojmobilnihaplikacijaprezentacija
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack // Standardni import
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Pause // Import za Pause ikonu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
@@ -119,59 +127,128 @@ fun formatTime(timeMs: Long): String {
 @Composable
 fun AudioPlayerScreen(navController: NavHostController) {
     val context = LocalContext.current
-    val audioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-    // val audioUri = RawResourceDataSource.buildRawResourceUri(R.raw.sample_audio)
+
+    // Stanje za unos URL-a
+    var inputUrl by remember { mutableStateOf("") }
+    // Stanje za URI odabrane lokalne datoteke
+    var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
+    // MediaItem koji se trenutno koristi za reprodukciju
+    var currentMediaItemForPlayer by remember { mutableStateOf<MediaItem?>(null) }
 
     val exoPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(audioUrl))
-            // setMediaItem(MediaItem.fromUri(audioUri))
-            prepare()
+        ExoPlayer.Builder(context).build()
+        // Ne pripremamo player odmah, već kada se postavi MediaItem
+    }
+
+    var isPlaying by remember { mutableStateOf(false) } // Inicijalno nije pokrenuto
+    var currentPosition by remember { mutableLongStateOf(0L) }
+    var duration by remember { mutableLongStateOf(0L) }
+    val coroutineScope = rememberCoroutineScope()
+
+    // ActivityResultLauncher za odabir audio datoteke
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(), // Koristimo OpenDocument
+        onResult = { uri: Uri? ->
+            uri?.let {
+                // Važno: Zatražiti trajne dozvole za pristup URI-ju
+                try {
+                    val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+                    selectedFileUri = it
+                    inputUrl = "" // Očisti URL polje ako je datoteka odabrana
+                    currentMediaItemForPlayer = MediaItem.fromUri(it)
+                } catch (e: SecurityException) {
+                    Log.e("AudioPlayer", "Nije moguće dobiti trajnu dozvolu za URI: $uri", e)
+                    Toast.makeText(context, "Greška pri odabiru datoteke: dozvola odbijena.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    )
+
+    // Reagiranje na promjenu MediaItem-a koji treba reproducirati
+    LaunchedEffect(currentMediaItemForPlayer) {
+        currentMediaItemForPlayer?.let { item ->
+            exoPlayer.stop() // Zaustavi prethodnu reprodukciju ako je bilo
+            exoPlayer.clearMediaItems() // Ukloni stare iteme
+            exoPlayer.setMediaItem(item)
+            exoPlayer.prepare()
+            isPlaying = false // Player je pripremljen, ali ne svira dok korisnik ne klikne play
+            currentPosition = 0L
+            duration = 0L // Ažurirat će se kada je player spreman
+            Log.d("AudioPlayer", "Novi MediaItem postavljen: ${item.mediaId}")
+        } ?: run { // Ako je currentMediaItemForPlayer null (npr. nakon "Očisti")
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            isPlaying = false
+            currentPosition = 0L
+            duration = 0L
+            Log.d("AudioPlayer", "MediaItem očišćen.")
         }
     }
 
-    var isPlaying by remember { mutableStateOf(exoPlayer.isPlaying) }
-    var currentPosition by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(0L) }
-    val coroutineScope = rememberCoroutineScope() // Koristite rememberCoroutineScope
-
+    // ExoPlayer listener i životni ciklus
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlayingValue: Boolean) {
                 isPlaying = isPlayingValue
             }
 
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    duration = exoPlayer.duration.coerceAtLeast(0L)
+                    Log.d("AudioPlayer", "Player spreman, trajanje: $duration")
+                } else if (playbackState == Player.STATE_ENDED) {
+                    currentPosition = exoPlayer.duration.coerceAtLeast(0L)
+                    isPlaying = false
+                    exoPlayer.seekTo(0) // Vrati na početak kad završi
+                    exoPlayer.pause()   // Osiguraj da je pauziran
+                    Log.d("AudioPlayer", "Reprodukcija završena.")
+                }
+            }
+
             override fun onEvents(player: Player, events: Player.Events) {
-                super.onEvents(player, events)
-                currentPosition = player.currentPosition
-                duration = player.duration.coerceAtLeast(0L)
+                if (events.contains(Player.EVENT_TIMELINE_CHANGED) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                    if (player.playbackState == Player.STATE_READY) {
+                        duration = player.duration.coerceAtLeast(0L)
+                    }
+                }
+                // Ažuriraj poziciju samo ako player svira ili ako se promijenila pozicija (npr. seek)
+                // ili ako se promijenilo stanje (npr. iz IDLE u READY).
+                if (isPlaying || events.contains(Player.EVENT_POSITION_DISCONTINUITY) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                    currentPosition = player.currentPosition
+                }
             }
         }
         exoPlayer.addListener(listener)
 
-        val job = coroutineScope.launch { // Koristite scope od rememberCoroutineScope
+        val job = coroutineScope.launch {
             while (true) {
-                if (exoPlayer.isPlaying) {
+                if (exoPlayer.playbackState == Player.STATE_READY && exoPlayer.isPlaying) {
                     currentPosition = exoPlayer.currentPosition
-                    duration = exoPlayer.duration.coerceAtLeast(0L)
                 }
-                delay(1000)
+                delay(200) // Češće ažuriranje za glađi slider
             }
         }
 
         onDispose {
             exoPlayer.removeListener(listener)
             job.cancel()
-            exoPlayer.release()
+            exoPlayer.release() // Oslobađanje ExoPlayera kada composable nestane
+            Log.d("AudioPlayer", "ExoPlayer oslobođen.")
         }
     }
 
+    // Upravljanje reprodukcijom ovisno o životnom ciklusu composable-a
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, exoPlayer) { // Dodaj exoPlayer kao key ako ovisiš o njemu
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE -> exoPlayer.pause()
-                Lifecycle.Event.ON_RESUME -> { /* Možda želite nastaviti ako je prethodno sviralo */ }
+                Lifecycle.Event.ON_PAUSE -> {
+                    if (exoPlayer.isPlaying) { // Pauziraj samo ako trenutno svira
+                        exoPlayer.pause()
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> { /* Ovdje možete odlučiti želite li nastaviti reprodukciju */ }
                 else -> {}
             }
         }
@@ -181,13 +258,20 @@ fun AudioPlayerScreen(navController: NavHostController) {
         }
     }
 
+    // Naslov za prikaz (iz URL-a, URI-ja ili metadata)
+    val displayTitle = currentMediaItemForPlayer?.mediaMetadata?.title?.toString()
+        ?: selectedFileUri?.lastPathSegment // Naziv datoteke iz URI-ja
+        ?: if (inputUrl.isNotBlank() && currentMediaItemForPlayer?.mediaId == inputUrl) inputUrl.substringAfterLast('/') else null // Naziv iz URL-a
+            ?: "Nema učitanog medija"
+
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Audio Player") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag") // Koristi standardnu ikonu
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
@@ -198,36 +282,128 @@ fun AudioPlayerScreen(navController: NavHostController) {
                 .padding(innerPadding)
                 .fillMaxSize()
                 .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            horizontalAlignment = Alignment.CenterHorizontally
+            // verticalArrangement = Arrangement.Center // Uklonjeno da UI bude na vrhu
         ) {
-            Text(
-                text = MediaItem.fromUri(audioUrl).mediaMetadata.title?.toString() ?: audioUrl.substringAfterLast('/'), // Prikaz naziva datoteke kao fallback
-                style = MaterialTheme.typography.titleMedium
+            // Unos URL-a
+            OutlinedTextField(
+                value = inputUrl,
+                onValueChange = { inputUrl = it },
+                label = { Text("Unesite URL MP3 datoteke") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            Slider(
-                value = if (duration > 0) currentPosition.toFloat() / duration.toFloat() else 0f,
-                onValueChange = { sliderValue ->
-                    exoPlayer.seekTo((sliderValue * duration).toLong())
+            Button(
+                onClick = {
+                    if (inputUrl.isNotBlank()) {
+                        try {
+                            currentMediaItemForPlayer = MediaItem.fromUri(inputUrl)
+                            selectedFileUri = null // Očisti odabir datoteke
+                        } catch (e: Exception) {
+                            Log.e("AudioPlayer", "Neispravan URL: $inputUrl", e)
+                            Toast.makeText(context, "Neispravan URL", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(context, "Molimo unesite URL", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            ) {
+                Text("Učitaj s URL-a")
+            }
+
+            Text("ILI", modifier = Modifier.padding(vertical = 8.dp))
+
+            // Odabir datoteke s uređaja
+            Button(
+                onClick = {
+                    audioPickerLauncher.launch(arrayOf("audio/mpeg", "audio/mp4", "video/mp4")) // Pokreni odabir za MP3 datoteke
+                    // Možete koristiti i "audio/*" za sve audio tipove
                 },
                 modifier = Modifier.fillMaxWidth()
-            )
-            Text("${formatTime(currentPosition)} / ${formatTime(duration)}")
-            Spacer(modifier = Modifier.height(16.dp))
-            IconButton(onClick = {
-                if (exoPlayer.isPlaying) {
-                    exoPlayer.pause()
-                } else {
-                    exoPlayer.play()
-                }
-            }) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, // Ispravljena ikona
-                    contentDescription = if (isPlaying) "Pauza" else "Play",
-                    modifier = Modifier.size(64.dp)
-                )
+            ) {
+                Icon(Icons.Filled.FolderOpen, contentDescription = "Odaberi datoteku", modifier = Modifier.padding(end = 8.dp))
+                Text("Odaberi datoteku s uređaja")
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Gumb za čišćenje odabira
+            if (currentMediaItemForPlayer != null) {
+                Button(
+                    onClick = {
+                        currentMediaItemForPlayer = null
+                        inputUrl = ""
+                        selectedFileUri = null
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Clear, contentDescription = "Očisti odabir", modifier = Modifier.padding(end = 8.dp))
+                    Text("Očisti odabir")
+                }
+            }
+
+
+            Spacer(modifier = Modifier.weight(1f)) // Gura kontrole playera prema dolje ako nema puno sadržaja iznad
+
+            // Player kontrole (vidljive samo ako je nešto učitano)
+            // if (currentMediaItemForPlayer != null && (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING)) {
+            // Bolje je uvijek prikazati kontrole, ali ih onemogućiti ako player nije spreman
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = displayTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Slider(
+                    value = if (duration > 0) currentPosition.toFloat() / duration.toFloat() else 0f,
+                    onValueChange = { sliderValue ->
+                        if (exoPlayer.playbackState == Player.STATE_READY) {
+                            exoPlayer.seekTo((sliderValue * duration).toLong())
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = currentMediaItemForPlayer != null && exoPlayer.playbackState == Player.STATE_READY
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(formatTime(currentPosition), style = MaterialTheme.typography.bodySmall)
+                    Text(formatTime(duration), style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                IconButton(
+                    onClick = {
+                        if (currentMediaItemForPlayer != null) { // Omogući klik samo ako je nešto učitano
+                            if (exoPlayer.isPlaying) {
+                                exoPlayer.pause()
+                            } else {
+                                if (exoPlayer.playbackState == Player.STATE_IDLE || exoPlayer.playbackState == Player.STATE_ENDED) {
+                                    // Ako player nije pripremljen (npr. nakon greške ili prvog učitavanja bez auto-play)
+                                    // ili je završio, pripremi ga ponovno ili seekaj na početak i pokreni
+                                    exoPlayer.prepare() // Osiguraj da je pripremljen
+                                    exoPlayer.seekTo(0) // Kreni od početka ako je završio
+                                }
+                                exoPlayer.play()
+                            }
+                        }
+                    },
+                    modifier = Modifier.size(64.dp),
+                    enabled = currentMediaItemForPlayer != null // Gumb je aktivan samo ako je nešto učitano
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Pauza" else "Play",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp)) // Dodatni razmak na dnu
         }
     }
 }
