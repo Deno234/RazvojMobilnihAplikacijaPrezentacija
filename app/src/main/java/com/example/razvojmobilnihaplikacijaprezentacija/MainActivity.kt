@@ -48,6 +48,8 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import android.content.ComponentName
 import android.os.Environment
+import androidx.compose.foundation.background
+import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.Rotate90DegreesCcw
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -73,6 +75,8 @@ import kotlinx.coroutines.isActive
 import androidx.media3.effect.Contrast
 import androidx.compose.material3.Slider
 import androidx.compose.material.icons.filled.Contrast
+import androidx.media3.common.PlaybackException
+import androidx.media3.effect.Brightness
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -940,107 +944,162 @@ fun BackgroundAudioScreen(navController: NavHostController) {
     }
 }
 
-@androidx.annotation.OptIn(UnstableApi::class) // Zbog korištenja Transformer API-ja
+// VAŽNO: Ova funkcija mora biti TOP-LEVEL
+@androidx.annotation.OptIn(UnstableApi::class) // Zbog korištenja Transformer API-ja i Player.setVideoEffects
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VideoEffectsScreen(navController: NavHostController) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var inputVideoUri by remember { mutableStateOf<Uri?>(null) }
-    var outputVideoUri by remember { mutableStateOf<Uri?>(null) } // Za spremljeni video
+    var outputVideoUri by remember { mutableStateOf<Uri?>(null) }
     var transformationProgress by remember { mutableFloatStateOf(0f) }
     var isTransforming by remember { mutableStateOf(false) }
-    var transformationMessage by remember { mutableStateOf("") }
 
-    var applyGrayscale by remember { mutableStateOf(false) }
-    var rotationDegrees by remember { mutableFloatStateOf(0f) } // Za rotaciju
-    var applyContrast by remember { mutableStateOf(false) } // NOVO: Stanje za kontrast
+    var rotationDegrees by remember { mutableFloatStateOf(0f) }
+    var applyContrast by remember { mutableStateOf(false) }
     var contrastValue by remember { mutableFloatStateOf(0f) }
+    var applyBrightness by remember { mutableStateOf(false) }
+    var brightnessValue by remember { mutableFloatStateOf(0f) }
 
-    // Video picker
+    var applyMirror by remember { mutableStateOf(false) }
+
+    // ExoPlayer za live preview efekata
+    // Unutar VideoEffectsScreen, gdje inicijalizirate previewExoPlayer
+    val previewExoPlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+            addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    Log.e("PreviewExoPlayer", "Player Error: ${error.message}", error)
+                    // Ovdje možete prikazati poruku korisniku putem SnackBar-a
+                    coroutineScope.launch { // Osigurajte da ste unutar coroutine scopea
+                        snackbarHostState.showSnackbar(
+                            message = "Greška pri prikazu previewa: ${error.errorCodeName}",
+                            duration = SnackbarDuration.Long
+                        )
+                    }
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    Log.d("PreviewExoPlayer", "Playback State: $playbackState")
+                    // Možete pratiti je li player došao u STATE_READY
+                }
+            })
+        }
+    }
+
+    // Efekt koji ažurira preview player kada se promijene efekti ili ulazni video
+    LaunchedEffect(inputVideoUri, rotationDegrees) {
+        inputVideoUri?.let { uri ->
+            val currentEffectsList = mutableListOf<Effect>()
+            if (rotationDegrees != 0f) {
+                currentEffectsList.add(ScaleAndRotateTransformation.Builder().setRotationDegrees(rotationDegrees).build())
+            }
+
+            previewExoPlayer.stop() // Zaustavi trenutnu reprodukciju prije promjene
+            previewExoPlayer.clearMediaItems() // Očisti stare stavke
+
+            previewExoPlayer.setVideoEffects(currentEffectsList) // Primijeni efekte na player
+            previewExoPlayer.setMediaItem(MediaItem.fromUri(uri)) // Postavi medijsku stavku
+            previewExoPlayer.prepare()
+            // previewExoPlayer.playWhenReady = true // Opcionalno, automatski pokreni preview
+        } ?: run {
+            // Ako nema inputVideoUri, očisti preview player
+            previewExoPlayer.stop()
+            previewExoPlayer.clearMediaItems()
+            previewExoPlayer.setVideoEffects(emptyList())
+        }
+    }
+
+    // Oslobađanje previewExoPlayer-a
+    DisposableEffect(Unit) {
+        onDispose {
+            previewExoPlayer.release()
+        }
+    }
+
+
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
         onResult = { uri: Uri? ->
             uri?.let {
                 try {
-                    // Zatražiti trajne dozvole ako je moguće (neke implementacije to ne podržavaju za OpenDocument)
                     // context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     inputVideoUri = it
-                    outputVideoUri = null // Resetiraj output kad se odabere novi input
-                    transformationMessage = "Odabran video: ${it.lastPathSegment}"
+                    outputVideoUri = null
+                    coroutineScope.launch { snackbarHostState.showSnackbar("Odabran video: ${it.lastPathSegment?.take(50)}") }
                     Log.d("VideoEffectsScreen", "Odabran video: $it")
                 } catch (e: SecurityException) {
                     Log.e("VideoEffectsScreen", "Nije moguće dobiti trajnu dozvolu za URI: $uri", e)
-                    transformationMessage = "Greška s dozvolom za odabir."
+                    coroutineScope.launch { snackbarHostState.showSnackbar("Greška s dozvolom za odabir.") }
                 }
             }
         }
     )
 
-    // Transformer instanca - kreira se po potrebi
     val transformerListener = remember {
         object : Transformer.Listener {
-            override fun onCompleted(
-                composition: Composition,
-                exportResult: ExportResult
-            ) {
+            override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                 isTransforming = false
                 transformationProgress = 1f
-                transformationMessage = "Transformacija uspješna! Spremljeno u: ${outputVideoUri?.path}"
                 Log.d("VideoEffectsScreen", "Transformacija uspješna. Output: $outputVideoUri, Result: $exportResult")
-                // Ovdje možete automatski pokrenuti pregled videa ili ponuditi opciju
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = "Transformacija uspješna! ${outputVideoUri?.lastPathSegment?.take(30)}",
+                        duration = SnackbarDuration.Long
+                    )
+                }
             }
 
-            // ISPRAVLJENA METODA
-            override fun onError(
-                composition: Composition,
-                exportResult: ExportResult,
-                exportException: ExportException
-            ) {
+            override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
                 isTransforming = false
-                transformationMessage = "Greška pri transformaciji: ${exportException.message}"
                 Log.e("VideoEffectsScreen", "Greška pri transformaciji. Result: $exportResult", exportException)
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = "Greška: ${exportException.errorCodeName} (${exportException.errorCode})",
+                        duration = SnackbarDuration.Long,
+                        withDismissAction = true
+                    )
+                }
             }
-
-            // onTransformationProgress je deprecated, koristite query کردن progressa
         }
     }
 
-    // Funkcija za pokretanje transformacije
     fun startTransformation() {
         val currentInputUri = inputVideoUri ?: run {
-            transformationMessage = "Molimo odaberite ulazni video."
+            coroutineScope.launch { snackbarHostState.showSnackbar("Molimo odaberite ulazni video.") }
             return
         }
 
-        isTransforming = true // UI update
-        transformationProgress = 0f // UI update
-        transformationMessage = "Transformacija u tijeku..." // UI update
+        isTransforming = true
+        transformationProgress = 0f
+        // Poruka o početku će se implicitno vidjeti kroz isTransforming = true (npr. "Transformiram...")
 
-        // Kreiranje izlazne datoteke (može ostati ovdje, nije previše zahtjevno)
         val outputDir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "TransformedVideos")
         if (!outputDir.exists()) {
             outputDir.mkdirs()
         }
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val outputFile = File(outputDir, "transformed_video_$timestamp.mp4")
-        // Dohvati URI prije ulaska u korutinu da ne bi bilo problema s contextom
         val determinedOutputUri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.provider",
             outputFile
         )
-        outputVideoUri = determinedOutputUri // UI update (za prikaz putanje)
+        outputVideoUri = determinedOutputUri // Postavi ovo odmah da se može prikazati u UI-ju ako je potrebno
         Log.d("VideoEffectsScreen", "Izlazna datoteka: ${outputFile.absolutePath}, URI: $determinedOutputUri")
 
-        coroutineScope.launch { // Default dispatcher, može biti Main ili Default ovisno o scope-u
-            var localTransformer: Transformer? = null // Drži referencu za eventualni cancel
+        coroutineScope.launch {
+            var localTransformer: Transformer? = null
             var progressJob: Job? = null
 
             try {
                 val inputMediaItem = MediaItem.fromUri(currentInputUri)
                 val effectsList = mutableListOf<Effect>()
+
                 if (rotationDegrees != 0f) {
                     effectsList.add(
                         ScaleAndRotateTransformation.Builder()
@@ -1048,29 +1107,34 @@ fun VideoEffectsScreen(navController: NavHostController) {
                             .build()
                     )
                 }
+                if (applyContrast) {
+                    effectsList.add(Contrast(contrastValue)) // contrastValue je sada u rasponu [-1f, 1f]
+                }
 
-                if (applyContrast) { // NOVO: Dodavanje efekta kontrasta
-                    // Vrijednosti kontrasta: 0.0 (sivo) do npr. 2.0 (visok kontrast). 1.0 je original.
-                    effectsList.add(Contrast(contrastValue))
+                if (applyBrightness) {
+                    effectsList.add(Brightness(brightnessValue)) // brightnessValue je sada u rasponu [-1f, 1f]
+                }
+
+                if (applyMirror) {
+                    effectsList.add(ScaleAndRotateTransformation.Builder().setScale(-1f, 1f).build())
                 }
 
                 val editedMediaItem = EditedMediaItem.Builder(inputMediaItem)
                     .setEffects(Effects(listOf(), effectsList))
                     .build()
 
-                // Kreiranje Transformera mora biti na dretvi s Looperom.
-                // Prebacujemo se na Main za kreiranje i start, progress.
-                withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) { // Osiguraj da se Transformer kreira i koristi na Main threadu
                     localTransformer = Transformer.Builder(context)
-                        .setLooper(context.mainLooper) // Eksplicitno Main Looper
+                        .setLooper(context.mainLooper)
                         .addListener(transformerListener)
                         .setVideoMimeType(MimeTypes.VIDEO_H264)
                         .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                        // .setMaxDelayBetweenMuxerSamplesMs(androidx.media3.common.C.TIME_UNSET)
                         .build()
 
-                    progressJob = launch { // Ova korutina će se također izvršavati na Dispatchers.Main
+                    progressJob = launch {
                         val progressHolder = androidx.media3.transformer.ProgressHolder()
-                        while (isActive && isTransforming) { // isActive provjerava je li korutina aktivna
+                        while (isActive && isTransforming) {
                             val progressState = localTransformer?.getProgress(progressHolder) ?: Transformer.PROGRESS_STATE_UNAVAILABLE
                             if (progressState != Transformer.PROGRESS_STATE_UNAVAILABLE) {
                                 transformationProgress = progressHolder.progress / 100f
@@ -1078,26 +1142,26 @@ fun VideoEffectsScreen(navController: NavHostController) {
                             delay(200)
                         }
                     }
-                    Log.d("VideoEffectsScreen", "Pokretanje transformacije za: $currentInputUri na $determinedOutputUri")
+                    Log.d("VideoEffectsScreen", "Pokretanje transformacije za: $currentInputUri na ${outputFile.absolutePath}")
                     localTransformer?.start(editedMediaItem, outputFile.absolutePath)
                 }
-                // Listeneri (onCompleted, onError) će biti pozvani na context.mainLooper
 
             } catch (e: Exception) {
-                // Ova catch grana hvata iznimke prije ili tijekom poziva withContext(Dispatchers.Main)
-                // ili ako sam start baci iznimku na neočekivan način.
-                // Listener onError bi trebao uhvatiti greške iz same transformacije.
                 withContext(Dispatchers.Main) {
                     isTransforming = false
-                    transformationMessage = "Greška pri transformaciji (vanjska): ${e.localizedMessage}"
-                    Log.e("VideoEffectsScreen", "Greška pri transformaciji (vanjska)", e)
-                    progressJob?.cancel() // Otkaži praćenje napretka
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "Greška pri pripremi: ${e.localizedMessage?.take(100)}",
+                            duration = SnackbarDuration.Long,
+                            withDismissAction = true
+                        )
+                    }
+                    Log.e("VideoEffectsScreen", "Greška pri pripremi transformacije (vanjska)", e)
+                    progressJob?.cancel()
                 }
             }
-            // Ne treba finally blok za otkazivanje progressJob-a jer isTransforming i isActive to rješavaju
         }
     }
-
 
     Scaffold(
         topBar = {
@@ -1109,7 +1173,8 @@ fun VideoEffectsScreen(navController: NavHostController) {
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -1126,20 +1191,65 @@ fun VideoEffectsScreen(navController: NavHostController) {
                 Text("Odaberi Video")
             }
 
-            inputVideoUri?.let { uri ->
-                Text("Odabrano: ${uri.lastPathSegment}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-                Spacer(modifier = Modifier.height(16.dp))
+            if (inputVideoUri != null) {
+                Button(
+                    onClick = {
+                        inputVideoUri = null
+                        outputVideoUri = null
+                        transformationProgress = 0f
+                        isTransforming = false
+                        // Resetiraj efekte na defaultne vrijednosti
+                        applyBrightness = false
+                        brightnessValue = 0f
+                        rotationDegrees = 0f
+                        applyContrast = false
+                        contrastValue = 0f
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                ) {
+                    Text("Ukloni Odabrani Video")
+                }
+            }
 
-                // Opcije za efekte
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Opcije za efekte (prikazuju se samo ako je video odabran)
+            if (inputVideoUri != null) {
+                Text("Efekti:", style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Start))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    Checkbox(checked = applyMirror, onCheckedChange = { applyMirror = it })
+                    Text("Zrcali video horizontalno")
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    Checkbox(checked = applyBrightness, onCheckedChange = { applyBrightness = it })
+                    Text("Promijeni Svjetlinu")
+                }
+                if (applyBrightness) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.Brightness6, contentDescription = "Svjetlina", modifier = Modifier.padding(end = 8.dp))
+                        Slider(
+                            value = brightnessValue,
+                            onValueChange = { brightnessValue = it },
+                            valueRange = -1f..1f,
+                            steps = 20,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(String.format(Locale.US, "%.1f", brightnessValue), modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                     Text("Rotacija: ${rotationDegrees.toInt()}°")
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(onClick = { rotationDegrees = (rotationDegrees + 90) % 360 }) {
                         Icon(Icons.Filled.Rotate90DegreesCcw, "Rotiraj")
                     }
                 }
-                Spacer(modifier = Modifier.height(8.dp)) // NOVI EFEKT - KONTRAST
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                     Checkbox(checked = applyContrast, onCheckedChange = { applyContrast = it })
                     Text("Primijeni Kontrast")
                 }
@@ -1149,8 +1259,8 @@ fun VideoEffectsScreen(navController: NavHostController) {
                         Slider(
                             value = contrastValue,
                             onValueChange = { contrastValue = it },
-                            valueRange = -1f..1f, // Raspon za kontrast, 1f je normalno
-                            steps = 20, // 20 koraka (0.0, 0.1, ..., 2.0)
+                            valueRange = -1f..1f, // Ispravan raspon za Contrast efekt
+                            steps = 20,
                             modifier = Modifier.weight(1f)
                         )
                         Text(String.format(Locale.US, "%.1f", contrastValue), modifier = Modifier.padding(start = 8.dp))
@@ -1164,48 +1274,92 @@ fun VideoEffectsScreen(navController: NavHostController) {
                     enabled = !isTransforming,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (isTransforming) "Transformiram..." else "Primijeni Efekte")
+                    Text(if (isTransforming) "Transformiram..." else "Primijeni Efekte i Spremi")
                 }
             }
 
             if (isTransforming) {
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 LinearProgressIndicator(
                     progress = { transformationProgress },
                     modifier = Modifier.fillMaxWidth()
                 )
+                Text("Napredak: ${(transformationProgress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
             }
 
-            if (transformationMessage.isNotBlank()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(transformationMessage, style = MaterialTheme.typography.bodyMedium)
-            }
+            Spacer(modifier = Modifier.height(4.dp))
 
-            // Prikaz originalnog i transformiranog videa (opcionalno)
-            Spacer(modifier = Modifier.weight(1f))
+            // Prikaz videa
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceAround
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp) // Veći razmak
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                    Text("Original")
-                    inputVideoUri?.let { VideoPreview(uri = it, modifier = Modifier.height(150.dp)) }
+                // Pregled s efektima (Live Preview)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Pregled s Efektima", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16 / 9f)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (inputVideoUri != null) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    PlayerView(ctx).apply {
+                                        player = previewExoPlayer
+                                        useController = true
+                                        controllerShowTimeoutMs = 2000 // Kontrole se brže sakriju
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Text("Odaberite video za pregled", style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                        }
+                    }
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                    Text("Transformiran")
-                    outputVideoUri?.let { uri ->
-                        VideoPreview(uri = uri, modifier = Modifier.height(150.dp))
-                        // Gumb za dijeljenje
-                        Button(onClick = {
-                            val shareIntent: Intent = Intent().apply {
-                                action = Intent.ACTION_SEND
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                type = context.contentResolver.getType(uri) ?: "video/mp4"
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(Intent.createChooser(shareIntent, "Podijeli transformirani video"))
-                        }, modifier = Modifier.padding(top = 8.dp)) {
+
+                // Transformirani video (prikazuje se nakon transformacije)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Spremljen Video", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16 / 9f)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (outputVideoUri != null && !isTransforming) { // Pokaži samo ako je spremljeno i ne transformira se
+                            VideoPreview(uri = outputVideoUri!!, modifier = Modifier.fillMaxSize())
+                        } else {
+                            Text(if (isTransforming) "Transformiram..." else "Nema spremljenog videa", style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                        }
+                    }
+                    if (outputVideoUri != null && !isTransforming) {
+                        Button(
+                            onClick = {
+                                val shareIntent: Intent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_STREAM, outputVideoUri) // outputVideoUri je content URI
+                                    type = context.contentResolver.getType(outputVideoUri!!) ?: "video/mp4"
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(shareIntent, "Podijeli transformirani video"))
+                            },
+                            modifier = Modifier.padding(top = 8.dp)
+                        ) {
                             Text("Podijeli")
                         }
                     }
@@ -1215,14 +1369,16 @@ fun VideoEffectsScreen(navController: NavHostController) {
     }
 }
 
-// Pomoćna Composable funkcija za prikaz videa
+// Pomoćna Composable funkcija za prikaz videa (ista kao prije, ali može se prilagoditi)
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-fun VideoPreview(uri: Uri, modifier: Modifier = Modifier) {
+fun VideoPreview(uri: Uri, modifier: Modifier = Modifier, autoPlay: Boolean = false) {
     val context = LocalContext.current
-    val exoPlayer = remember {
+    val exoPlayer = remember(uri) { // Ponovno kreiraj player ako se URI promijeni
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
+            repeatMode = Player.REPEAT_MODE_ONE
+            playWhenReady = autoPlay // Kontroliraj auto-play
             prepare()
         }
     }
@@ -1231,13 +1387,14 @@ fun VideoPreview(uri: Uri, modifier: Modifier = Modifier) {
         factory = { ctx ->
             PlayerView(ctx).apply {
                 player = exoPlayer
-                useController = true // Omogući kontrole
+                useController = true
+                controllerShowTimeoutMs = 2000
             }
         },
         modifier = modifier.fillMaxWidth()
     )
 
-    DisposableEffect(Unit) {
+    DisposableEffect(exoPlayer) { // Osiguraj da se player oslobodi
         onDispose {
             exoPlayer.release()
         }
