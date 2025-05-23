@@ -47,8 +47,30 @@ import java.util.concurrent.TimeUnit
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import android.content.ComponentName
+import android.os.Environment
+import androidx.compose.material.icons.filled.Rotate90DegreesCcw
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.media3.common.Effect
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Transformer
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import androidx.media3.transformer.Effects
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -837,7 +859,7 @@ fun BackgroundAudioScreen(navController: NavHostController) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (mediaController?.currentMediaItem != null) {
+            if (mediaController?.currentMediaItem != null || isPlaying) {
                 Button(
                     onClick = {
                         mediaController?.stop() // Zaustavlja reprodukciju
@@ -916,16 +938,165 @@ fun BackgroundAudioScreen(navController: NavHostController) {
     }
 }
 
+@androidx.annotation.OptIn(UnstableApi::class) // Zbog korištenja Transformer API-ja
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VideoEffectsScreen(navController: NavHostController) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var inputVideoUri by remember { mutableStateOf<Uri?>(null) }
+    var outputVideoUri by remember { mutableStateOf<Uri?>(null) } // Za spremljeni video
+    var transformationProgress by remember { mutableFloatStateOf(0f) }
+    var isTransforming by remember { mutableStateOf(false) }
+    var transformationMessage by remember { mutableStateOf("") }
+
+    var applyGrayscale by remember { mutableStateOf(false) }
+    var rotationDegrees by remember { mutableFloatStateOf(0f) } // Za rotaciju
+
+    // Video picker
+    val videoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri: Uri? ->
+            uri?.let {
+                try {
+                    // Zatražiti trajne dozvole ako je moguće (neke implementacije to ne podržavaju za OpenDocument)
+                    // context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    inputVideoUri = it
+                    outputVideoUri = null // Resetiraj output kad se odabere novi input
+                    transformationMessage = "Odabran video: ${it.lastPathSegment}"
+                    Log.d("VideoEffectsScreen", "Odabran video: $it")
+                } catch (e: SecurityException) {
+                    Log.e("VideoEffectsScreen", "Nije moguće dobiti trajnu dozvolu za URI: $uri", e)
+                    transformationMessage = "Greška s dozvolom za odabir."
+                }
+            }
+        }
+    )
+
+    // Transformer instanca - kreira se po potrebi
+    val transformerListener = remember {
+        object : Transformer.Listener {
+            override fun onCompleted(
+                composition: Composition,
+                exportResult: ExportResult
+            ) {
+                isTransforming = false
+                transformationProgress = 1f
+                transformationMessage = "Transformacija uspješna! Spremljeno u: ${outputVideoUri?.path}"
+                Log.d("VideoEffectsScreen", "Transformacija uspješna. Output: $outputVideoUri, Result: $exportResult")
+                // Ovdje možete automatski pokrenuti pregled videa ili ponuditi opciju
+            }
+
+            // ISPRAVLJENA METODA
+            override fun onError(
+                composition: Composition,
+                exportResult: ExportResult,
+                exportException: ExportException
+            ) {
+                isTransforming = false
+                transformationMessage = "Greška pri transformaciji: ${exportException.message}"
+                Log.e("VideoEffectsScreen", "Greška pri transformaciji. Result: $exportResult", exportException)
+            }
+
+            // onTransformationProgress je deprecated, koristite query کردن progressa
+        }
+    }
+
+    // Funkcija za pokretanje transformacije
+    fun startTransformation() {
+        val currentInputUri = inputVideoUri ?: run {
+            transformationMessage = "Molimo odaberite ulazni video."
+            return
+        }
+
+        isTransforming = true // UI update
+        transformationProgress = 0f // UI update
+        transformationMessage = "Transformacija u tijeku..." // UI update
+
+        // Kreiranje izlazne datoteke (može ostati ovdje, nije previše zahtjevno)
+        val outputDir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "TransformedVideos")
+        if (!outputDir.exists()) {
+            outputDir.mkdirs()
+        }
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        val outputFile = File(outputDir, "transformed_video_$timestamp.mp4")
+        // Dohvati URI prije ulaska u korutinu da ne bi bilo problema s contextom
+        val determinedOutputUri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            outputFile
+        )
+        outputVideoUri = determinedOutputUri // UI update (za prikaz putanje)
+        Log.d("VideoEffectsScreen", "Izlazna datoteka: ${outputFile.absolutePath}, URI: $determinedOutputUri")
+
+        coroutineScope.launch { // Default dispatcher, može biti Main ili Default ovisno o scope-u
+            var localTransformer: Transformer? = null // Drži referencu za eventualni cancel
+            var progressJob: Job? = null
+
+            try {
+                val inputMediaItem = MediaItem.fromUri(currentInputUri)
+                val effectsList = mutableListOf<Effect>()
+                if (rotationDegrees != 0f) {
+                    effectsList.add(
+                        ScaleAndRotateTransformation.Builder()
+                            .setRotationDegrees(rotationDegrees)
+                            .build()
+                    )
+                }
+
+                val editedMediaItem = EditedMediaItem.Builder(inputMediaItem)
+                    .setEffects(Effects(listOf(), effectsList))
+                    .build()
+
+                // Kreiranje Transformera mora biti na dretvi s Looperom.
+                // Prebacujemo se na Main za kreiranje i start, progress.
+                withContext(Dispatchers.Main) {
+                    localTransformer = Transformer.Builder(context)
+                        .setLooper(context.mainLooper) // Eksplicitno Main Looper
+                        .addListener(transformerListener)
+                        .setVideoMimeType(MimeTypes.VIDEO_H264)
+                        .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                        .build()
+
+                    progressJob = launch { // Ova korutina će se također izvršavati na Dispatchers.Main
+                        val progressHolder = androidx.media3.transformer.ProgressHolder()
+                        while (isActive && isTransforming) { // isActive provjerava je li korutina aktivna
+                            val progressState = localTransformer?.getProgress(progressHolder) ?: Transformer.PROGRESS_STATE_UNAVAILABLE
+                            if (progressState != Transformer.PROGRESS_STATE_UNAVAILABLE) {
+                                transformationProgress = progressHolder.progress / 100f
+                            }
+                            delay(200)
+                        }
+                    }
+                    Log.d("VideoEffectsScreen", "Pokretanje transformacije za: $currentInputUri na $determinedOutputUri")
+                    localTransformer?.start(editedMediaItem, outputFile.absolutePath)
+                }
+                // Listeneri (onCompleted, onError) će biti pozvani na context.mainLooper
+
+            } catch (e: Exception) {
+                // Ova catch grana hvata iznimke prije ili tijekom poziva withContext(Dispatchers.Main)
+                // ili ako sam start baci iznimku na neočekivan način.
+                // Listener onError bi trebao uhvatiti greške iz same transformacije.
+                withContext(Dispatchers.Main) {
+                    isTransforming = false
+                    transformationMessage = "Greška pri transformaciji (vanjska): ${e.localizedMessage}"
+                    Log.e("VideoEffectsScreen", "Greška pri transformaciji (vanjska)", e)
+                    progressJob?.cancel() // Otkaži praćenje napretka
+                }
+            }
+            // Ne treba finally blok za otkazivanje progressJob-a jer isTransforming i isActive to rješavaju
+        }
+    }
+
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Video Efekti (Koncept)") },
+                title = { Text("Video Efekti") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag") // Koristi standardnu ikonu
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
@@ -936,31 +1107,116 @@ fun VideoEffectsScreen(navController: NavHostController) {
                 .padding(innerPadding)
                 .fillMaxSize()
                 .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                "Media3 Transformer API omogućuje primjenu audio i video efekata, promjenu formata, rezanje i spajanje medijskih datoteka.",
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                "Primjer korištenja Transformer API-ja:\n" +
-                        "1. Stvorite `EditedMediaItem` s izvornim `MediaItem` i popisom efekata.\n" +
-                        "2. Stvorite `Transformer` instancu.\n" +
-                        "3. Pozovite `transformer.start(editedMediaItem, outputPath)`.\n" +
-                        "4. Pratite napredak pomoću `Transformer.Listener`.",
-                textAlign = TextAlign.Justify
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = { /* Ovdje bi se pokrenula transformacija */ }) {
-                Text("Primijeni efekt (simulacija)")
+            Button(
+                onClick = { videoPickerLauncher.launch(arrayOf("video/*")) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.FolderOpen, contentDescription = "Odaberi video", modifier = Modifier.padding(end = 8.dp))
+                Text("Odaberi Video")
             }
-            Text(
-                "Potrebna je ovisnost: implementation(\"androidx.media3:media3-transformer:1.X.X\")",
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.bodySmall
-            )
+
+            inputVideoUri?.let { uri ->
+                Text("Odabrano: ${uri.lastPathSegment}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Opcije za efekte
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = applyGrayscale, onCheckedChange = { applyGrayscale = it })
+                    Text("Crno-bijeli filter")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Rotacija: ${rotationDegrees.toInt()}°")
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(onClick = { rotationDegrees = (rotationDegrees + 90) % 360 }) {
+                        Icon(Icons.Filled.Rotate90DegreesCcw, "Rotiraj")
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = { startTransformation() },
+                    enabled = !isTransforming,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isTransforming) "Transformiram..." else "Primijeni Efekte")
+                }
+            }
+
+            if (isTransforming) {
+                Spacer(modifier = Modifier.height(16.dp))
+                LinearProgressIndicator(
+                    progress = { transformationProgress },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (transformationMessage.isNotBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(transformationMessage, style = MaterialTheme.typography.bodyMedium)
+            }
+
+            // Prikaz originalnog i transformiranog videa (opcionalno)
+            Spacer(modifier = Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceAround
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                    Text("Original")
+                    inputVideoUri?.let { VideoPreview(uri = it, modifier = Modifier.height(150.dp)) }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                    Text("Transformiran")
+                    outputVideoUri?.let { uri ->
+                        VideoPreview(uri = uri, modifier = Modifier.height(150.dp))
+                        // Gumb za dijeljenje
+                        Button(onClick = {
+                            val shareIntent: Intent = Intent().apply {
+                                action = Intent.ACTION_SEND
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                type = context.contentResolver.getType(uri) ?: "video/mp4"
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Podijeli transformirani video"))
+                        }, modifier = Modifier.padding(top = 8.dp)) {
+                            Text("Podijeli")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Pomoćna Composable funkcija za prikaz videa
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+fun VideoPreview(uri: Uri, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val exoPlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(uri))
+            prepare()
+        }
+    }
+
+    AndroidView(
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                player = exoPlayer
+                useController = true // Omogući kontrole
+            }
+        },
+        modifier = modifier.fillMaxWidth()
+    )
+
+    DisposableEffect(Unit) {
+        onDispose {
+            exoPlayer.release()
         }
     }
 }

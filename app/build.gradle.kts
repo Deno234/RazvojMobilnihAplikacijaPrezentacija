@@ -57,6 +57,7 @@ dependencies {
     implementation(libs.media3.common)
     implementation(libs.media3.session)
     implementation(libs.media3.transformer)
+    implementation(libs.media3.effect)
     implementation(libs.activity.ktx)
     implementation(libs.icons.core)
     implementation(libs.icons.extended)

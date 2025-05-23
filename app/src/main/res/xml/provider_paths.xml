@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+        Definira putanju unutar direktorija specifičnog za aplikaciju
+        gdje se spremaju transformirani videi.
+        'name' je proizvoljan naziv za ovu putanju.
+        'path' mora odgovarati poddirektoriju unutar onoga što vraća
+        context.getExternalFilesDir(Environment.DIRECTORY_MOVIES).
+        U našem primjeru koda, to je "Movies/TransformedVideos/".
+    -->
+    <external-files-path
+        name="transformed_videos"
+        path="Movies/TransformedVideos/" />
+</paths>
