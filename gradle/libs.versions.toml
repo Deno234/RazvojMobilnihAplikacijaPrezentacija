@@ -45,6 +45,7 @@ activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref
 icons-core = { group = "androidx.compose.material", name = "material-icons-core", version.ref = "iconsCore" }
 icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "iconsExtended" }
 guava-android = { group = "com.google.guava", name = "guava", version.ref = "guavaVersion" }
+viewModel-savedstate = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-savedstate", version.ref = "viewModelCompose" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

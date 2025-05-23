@@ -93,6 +93,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.PlaybackException
 import androidx.media3.effect.Brightness
 import coil.compose.AsyncImage
@@ -1427,86 +1428,50 @@ fun VideoPreview(uri: Uri, modifier: Modifier = Modifier, autoPlay: Boolean = fa
     }
 }
 
-// VAŽNO: Ova funkcija mora biti TOP-LEVEL
-@OptIn(ExperimentalMaterial3Api::class)
+// TOP-LEVEL Composable funkcija
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) // Dodaj ExperimentalFoundationApi za combinedClickable
 @Composable
-fun PhotoViewerScreen(navController: NavHostController) {
+fun PhotoViewerScreen(
+    navController: NavHostController,
+    photoViewModel: PhotoViewModel = viewModel() // Dohvati instancu PhotoViewModela
+) {
     val context = LocalContext.current
 
-    // Stanje za čuvanje liste URI-ja odabranih slika
-    val imageUris = remember { mutableStateListOf<Uri>() }
-    // Stanje za praćenje je li mod za brisanje aktivan
-    var isInDeleteMode by remember { mutableStateOf(false) }
-    // Stanje za praćenje odabranih slika za brisanje
-    val selectedImagesForDeletion = remember { mutableStateListOf<Uri>() }
+    // Dohvati stanja iz ViewModela
+    // Ne trebamo 'remember' za ova stanja jer ih ViewModel drži i preživljava rekompozicije
+    // i promjene konfiguracije. SnapshotStateList će automatski triggerati rekompoziciju.
+    val imageUris = photoViewModel.imageUris
+    val selectedImagesForDeletion = photoViewModel.selectedImagesForDeletion
 
-    // Stanje za prikaz dijaloga za potvrdu brisanja
     var showDeleteConfirmationDialog by remember { mutableStateOf(false) }
-    var imageToDeleteTemporarily by remember { mutableStateOf<Uri?>(null) } // Za pojedinačno brisanje
 
-
-    // Moderni Photo Picker za odabir više slika [4, 5]
+    // Moderni Photo Picker
     val multiplePhotoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10), // Ograniči broj odjednom
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10),
         onResult = { uris ->
             if (uris.isNotEmpty()) {
                 Log.d("PhotoPicker", "Odabrano URI-ja: ${uris.size}")
-                val newUrisToAdd = uris.filter { uri -> !imageUris.contains(uri) } // Filtriraj postojeće
-                if (newUrisToAdd.isNotEmpty()) {
-                    imageUris.addAll(newUrisToAdd)
-                }
-                if (newUrisToAdd.size < uris.size) {
-                    // Opcionalno: obavijesti korisnika da su neke slike već dodane
-                    Toast.makeText(context, "Neke odabrane slike su već u galeriji.", Toast.LENGTH_SHORT).show()
+                photoViewModel.addUris(uris)
+                // Opcionalno, obavijesti korisnika
+                val newCount = uris.count { uri -> !imageUris.contains(uri) } // Provjeri koliko je stvarno novih
+                if (newCount < uris.size && newCount > 0) {
+                    Toast.makeText(context, "$newCount slika dodano. Ostale su već u galeriji.", Toast.LENGTH_SHORT).show()
+                } else if (newCount == uris.size && newCount > 0) {
+                    // Sve su nove
+                } else if (uris.isNotEmpty() && newCount == 0) {
+                    Toast.makeText(context, "Sve odabrane slike su već u galeriji.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     )
 
-    // Alternativa: Stariji način za odabir više sadržaja (ako PickVisualMedia nije idealan)
-    // val multiplePhotoPickerLauncherLegacy = rememberLauncherForActivityResult(
-    //     contract = ActivityResultContracts.GetMultipleContents(),
-    //     onResult = { uris: List<Uri> ->
-    //         if (uris.isNotEmpty()) {
-    //             imageUris.addAll(uris)
-    //         }
-    //     }
-    // )
-
-
-    fun enterDeleteMode(imageUri: Uri) {
-        isInDeleteMode = true
-        selectedImagesForDeletion.add(imageUri)
-    }
-
-    fun toggleImageSelectionForDeletion(imageUri: Uri) {
-        if (selectedImagesForDeletion.contains(imageUri)) {
-            selectedImagesForDeletion.remove(imageUri)
-            if (selectedImagesForDeletion.isEmpty()) {
-                isInDeleteMode = false // Izađi iz moda brisanja ako ništa nije odabrano
-            }
-        } else {
-            selectedImagesForDeletion.add(imageUri)
-        }
-    }
-
-    fun confirmAndDeleteSelectedImages() {
-        imageUris.removeAll(selectedImagesForDeletion)
-        selectedImagesForDeletion.clear()
-        isInDeleteMode = false
-        showDeleteConfirmationDialog = false
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (isInDeleteMode) "Odaberi za Brisanje (${selectedImagesForDeletion.size})" else "Galerija Slika") },
+                title = { Text(if (photoViewModel.isInDeleteMode) "Odaberi za Brisanje (${selectedImagesForDeletion.size})" else "Galerija Slika") },
                 navigationIcon = {
-                    if (isInDeleteMode) {
-                        IconButton(onClick = {
-                            isInDeleteMode = false
-                            selectedImagesForDeletion.clear()
-                        }) {
+                    if (photoViewModel.isInDeleteMode) {
+                        IconButton(onClick = { photoViewModel.exitDeleteModeAndClearSelection() }) {
                             Icon(Icons.Filled.Close, contentDescription = "Otkaži brisanje")
                         }
                     } else {
@@ -1516,7 +1481,7 @@ fun PhotoViewerScreen(navController: NavHostController) {
                     }
                 },
                 actions = {
-                    if (isInDeleteMode && selectedImagesForDeletion.isNotEmpty()) {
+                    if (photoViewModel.isInDeleteMode && selectedImagesForDeletion.isNotEmpty()) {
                         IconButton(onClick = { showDeleteConfirmationDialog = true }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Obriši Odabrano")
                         }
@@ -1525,9 +1490,8 @@ fun PhotoViewerScreen(navController: NavHostController) {
             )
         },
         floatingActionButton = {
-            if (!isInDeleteMode) {
+            if (!photoViewModel.isInDeleteMode) {
                 FloatingActionButton(onClick = {
-                    // Koristi moderni photo picker
                     multiplePhotoPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
@@ -1543,19 +1507,12 @@ fun PhotoViewerScreen(navController: NavHostController) {
                 .fillMaxSize()
         ) {
             if (imageUris.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "Galerija je prazna.\nDodajte slike pomoću '+' gumba.",
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.headlineSmall
-                    )
+                Box() {
+                    Text("Nema slika u galeriji")
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(3), // Prikaz 3 slike u redu
+                    columns = GridCells.Fixed(3),
                     contentPadding = PaddingValues(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -1564,22 +1521,20 @@ fun PhotoViewerScreen(navController: NavHostController) {
                     itemsIndexed(imageUris, key = { _, uri -> uri.toString() }) { index, uri ->
                         GalleryImageItem(
                             uri = uri,
-                            isInDeleteMode = isInDeleteMode,
-                            isSelectedForDeletion = selectedImagesForDeletion.contains(uri),
+                            isInDeleteMode = photoViewModel.isInDeleteMode, // Koristi iz ViewModela
+                            isSelectedForDeletion = selectedImagesForDeletion.contains(uri), // Koristi iz ViewModela
                             onImageClick = {
-                                if (isInDeleteMode) {
-                                    toggleImageSelectionForDeletion(uri)
+                                if (photoViewModel.isInDeleteMode) {
+                                    photoViewModel.toggleImageSelectionForDeletion(uri)
                                 } else {
-                                    // Ovdje možete implementirati prikaz slike preko cijelog zaslona
                                     Log.d("PhotoViewer", "Kliknuta slika: $uri")
-                                    val encodedUri = Uri.encode(uri.toString()) // URI se mora enkodirati za navigaciju
+                                    val encodedUri = Uri.encode(uri.toString())
                                     navController.navigate("image_detail_screen/$encodedUri")
-                                    // navController.navigate("image_detail_screen/$uri") // Primjer
                                 }
                             },
                             onImageLongClick = {
-                                if (!isInDeleteMode) {
-                                    enterDeleteMode(uri)
+                                if (!photoViewModel.isInDeleteMode) {
+                                    photoViewModel.enterDeleteMode(uri)
                                 }
                             }
                         )
@@ -1588,7 +1543,6 @@ fun PhotoViewerScreen(navController: NavHostController) {
             }
         }
 
-        // Dijalog za potvrdu brisanja
         if (showDeleteConfirmationDialog) {
             AlertDialog(
                 onDismissRequest = { showDeleteConfirmationDialog = false },
@@ -1596,7 +1550,10 @@ fun PhotoViewerScreen(navController: NavHostController) {
                 text = { Text("Jeste li sigurni da želite obrisati odabrane slike (${selectedImagesForDeletion.size}) iz galerije aplikacije?") },
                 confirmButton = {
                     Button(
-                        onClick = { confirmAndDeleteSelectedImages() },
+                        onClick = {
+                            photoViewModel.removeSelectedUris()
+                            showDeleteConfirmationDialog = false
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                     ) {
                         Text("Obriši")
