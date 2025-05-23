@@ -36,15 +36,18 @@ class MediaPlaybackService : MediaSessionService() {
             }
         })
 
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra("NAVIGATE_TO_SCREEN", "background_audio_screen")
+        }
+
         // Intent za pokretanje UI-a iz notifikacije
         val sessionActivityPendingIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java).apply {
-                // Možete dodati extra podatke ako želite da se otvori određeni zaslon
-                // npr. da MainActivity zna otvoriti AudioPlayerScreen
-                // putExtra("NAVIGATE_TO_SCREEN", "audio_player_screen")
-            },
+            intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 

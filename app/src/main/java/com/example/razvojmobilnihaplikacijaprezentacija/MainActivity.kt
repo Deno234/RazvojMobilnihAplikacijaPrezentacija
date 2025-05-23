@@ -53,19 +53,31 @@ import com.google.common.util.concurrent.ListenableFuture
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val navigateToScreen = intent.getStringExtra("NAVIGATE_TO_SCREEN")
         enableEdgeToEdge()
         setContent {
             RazvojMobilnihAplikacijaPrezentacijaTheme {
-                AppNavigation()
+                val navController = rememberNavController()
+                AppNavigation(navController = navController, startDestinationFromIntent = navigateToScreen)
             }
         }
     }
 }
 
+// Modificirajte AppNavigation da prihvati startDestinationFromIntent
 @Composable
-fun AppNavigation() {
-    val navController = rememberNavController()
-    NavHost(navController = navController, startDestination = "main_screen") {
+fun AppNavigation(navController: NavHostController, startDestinationFromIntent: String?) {
+    // Određivanje stvarne početne destinacije
+    val actualStartDestination = if (startDestinationFromIntent == "background_audio_screen") {
+        "background_audio_screen"
+    } else {
+        "main_screen" // Vaša defaultna početna destinacija
+    }
+    Log.d("AppNavigation", "Actual start destination: $actualStartDestination")
+
+
+    NavHost(navController = navController, startDestination = actualStartDestination) {
         composable("main_screen") {
             MainScreen(navController = navController)
         }
@@ -83,6 +95,20 @@ fun AppNavigation() {
         }
         composable("photo_viewer_screen") {
             PhotoViewerScreen(navController = navController)
+        }
+    }
+
+    // Ako je MainActivity pokrenuta s namjerom da ide na specifični ekran, navigiraj tamo
+    // Ovo je korisno ako je aplikacija već bila pokrenuta, ali ne na željenom ekranu
+    // OVO SE MOŽE PREMJESTITI U onNewIntent AKO JE POTREBNO
+    LaunchedEffect(startDestinationFromIntent) {
+        if (startDestinationFromIntent == "background_audio_screen" && navController.currentDestination?.route != "background_audio_screen") {
+            Log.d("AppNavigation", "Navigating to background_audio_screen due to intent.")
+            navController.navigate("background_audio_screen") {
+                // Opcionalno, očisti backstack do main_screen ako je to željeno ponašanje
+                popUpTo("main_screen") { inclusive = false } // Ostavi main_screen u backstacku
+                launchSingleTop = true // Izbjegavaj višestruke instance istog ekrana
+            }
         }
     }
 }
