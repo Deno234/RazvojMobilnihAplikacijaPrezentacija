@@ -48,8 +48,19 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import android.content.ComponentName
 import android.os.Environment
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Brightness6
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Rotate90DegreesCcw
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -75,8 +86,13 @@ import kotlinx.coroutines.isActive
 import androidx.media3.effect.Contrast
 import androidx.compose.material3.Slider
 import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.media3.common.PlaybackException
 import androidx.media3.effect.Brightness
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1401,53 +1417,244 @@ fun VideoPreview(uri: Uri, modifier: Modifier = Modifier, autoPlay: Boolean = fa
     }
 }
 
+// VAŽNO: Ova funkcija mora biti TOP-LEVEL
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PhotoViewerScreen(navController: NavHostController) {
-    val imageResId = try {
-        R.drawable.sample_image
-    } catch (e: Exception) {
-        android.R.drawable.ic_menu_gallery
+    val context = LocalContext.current
+
+    // Stanje za čuvanje liste URI-ja odabranih slika
+    val imageUris = remember { mutableStateListOf<Uri>() }
+    // Stanje za praćenje je li mod za brisanje aktivan
+    var isInDeleteMode by remember { mutableStateOf(false) }
+    // Stanje za praćenje odabranih slika za brisanje
+    val selectedImagesForDeletion = remember { mutableStateListOf<Uri>() }
+
+    // Stanje za prikaz dijaloga za potvrdu brisanja
+    var showDeleteConfirmationDialog by remember { mutableStateOf(false) }
+    var imageToDeleteTemporarily by remember { mutableStateOf<Uri?>(null) } // Za pojedinačno brisanje
+
+
+    // Moderni Photo Picker za odabir više slika [4, 5]
+    val multiplePhotoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10), // Ograniči broj odjednom
+        onResult = { uris ->
+            if (uris.isNotEmpty()) {
+                Log.d("PhotoPicker", "Odabrano URI-ja: ${uris.size}")
+                val newUrisToAdd = uris.filter { uri -> !imageUris.contains(uri) } // Filtriraj postojeće
+                if (newUrisToAdd.isNotEmpty()) {
+                    imageUris.addAll(newUrisToAdd)
+                }
+                if (newUrisToAdd.size < uris.size) {
+                    // Opcionalno: obavijesti korisnika da su neke slike već dodane
+                    Toast.makeText(context, "Neke odabrane slike su već u galeriji.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    )
+
+    // Alternativa: Stariji način za odabir više sadržaja (ako PickVisualMedia nije idealan)
+    // val multiplePhotoPickerLauncherLegacy = rememberLauncherForActivityResult(
+    //     contract = ActivityResultContracts.GetMultipleContents(),
+    //     onResult = { uris: List<Uri> ->
+    //         if (uris.isNotEmpty()) {
+    //             imageUris.addAll(uris)
+    //         }
+    //     }
+    // )
+
+
+    fun enterDeleteMode(imageUri: Uri) {
+        isInDeleteMode = true
+        selectedImagesForDeletion.add(imageUri)
+    }
+
+    fun toggleImageSelectionForDeletion(imageUri: Uri) {
+        if (selectedImagesForDeletion.contains(imageUri)) {
+            selectedImagesForDeletion.remove(imageUri)
+            if (selectedImagesForDeletion.isEmpty()) {
+                isInDeleteMode = false // Izađi iz moda brisanja ako ništa nije odabrano
+            }
+        } else {
+            selectedImagesForDeletion.add(imageUri)
+        }
+    }
+
+    fun confirmAndDeleteSelectedImages() {
+        imageUris.removeAll(selectedImagesForDeletion)
+        selectedImagesForDeletion.clear()
+        isInDeleteMode = false
+        showDeleteConfirmationDialog = false
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Prikazivač Fotografija") },
+                title = { Text(if (isInDeleteMode) "Odaberi za Brisanje (${selectedImagesForDeletion.size})" else "Galerija Slika") },
                 navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag") // Koristi standardnu ikonu
+                    if (isInDeleteMode) {
+                        IconButton(onClick = {
+                            isInDeleteMode = false
+                            selectedImagesForDeletion.clear()
+                        }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Otkaži brisanje")
+                        }
+                    } else {
+                        IconButton(onClick = { navController.popBackStack() }) {
+                            Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                        }
+                    }
+                },
+                actions = {
+                    if (isInDeleteMode && selectedImagesForDeletion.isNotEmpty()) {
+                        IconButton(onClick = { showDeleteConfirmationDialog = true }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Obriši Odabrano")
+                        }
                     }
                 }
             )
+        },
+        floatingActionButton = {
+            if (!isInDeleteMode) {
+                FloatingActionButton(onClick = {
+                    // Koristi moderni photo picker
+                    multiplePhotoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                }) {
+                    Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Dodaj Slike")
+                }
+            }
         }
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
         ) {
-            Text("Prikaz slike iz resursa aplikacije:", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(16.dp))
-            Image(
-                painter = painterResource(id = imageResId),
-                contentDescription = "Primjer fotografije",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f)
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            if (imageResId == android.R.drawable.ic_menu_gallery) {
-                Text("Napomena: Prikazuje se zamjenska ikona. Dodajte 'sample_image.jpg' u res/drawable.", color = Color.Red)
+            if (imageUris.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Galerija je prazna.\nDodajte slike pomoću '+' gumba.",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3), // Prikaz 3 slike u redu
+                    contentPadding = PaddingValues(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    itemsIndexed(imageUris, key = { _, uri -> uri.toString() }) { index, uri ->
+                        GalleryImageItem(
+                            uri = uri,
+                            isInDeleteMode = isInDeleteMode,
+                            isSelectedForDeletion = selectedImagesForDeletion.contains(uri),
+                            onImageClick = {
+                                if (isInDeleteMode) {
+                                    toggleImageSelectionForDeletion(uri)
+                                } else {
+                                    // Ovdje možete implementirati prikaz slike preko cijelog zaslona
+                                    Log.d("PhotoViewer", "Kliknuta slika: $uri")
+                                    // navController.navigate("image_detail_screen/$uri") // Primjer
+                                }
+                            },
+                            onImageLongClick = {
+                                if (!isInDeleteMode) {
+                                    enterDeleteMode(uri)
+                                }
+                            }
+                        )
+                    }
+                }
             }
-            Text(
-                "Za prikaz slika s interneta, koristite biblioteke poput Coil ili Glide. Za prikaz slika s uređaja, potrebno je rukovati dozvolama (npr. READ_MEDIA_IMAGES).",
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.bodySmall
+        }
+
+        // Dijalog za potvrdu brisanja
+        if (showDeleteConfirmationDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirmationDialog = false },
+                title = { Text("Potvrdi Brisanje") },
+                text = { Text("Jeste li sigurni da želite obrisati odabrane slike (${selectedImagesForDeletion.size}) iz galerije aplikacije?") },
+                confirmButton = {
+                    Button(
+                        onClick = { confirmAndDeleteSelectedImages() },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Obriši")
+                    }
+                },
+                dismissButton = {
+                    Button(onClick = { showDeleteConfirmationDialog = false }) {
+                        Text("Odustani")
+                    }
+                }
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun GalleryImageItem(
+    uri: Uri,
+    isInDeleteMode: Boolean,
+    isSelectedForDeletion: Boolean,
+    onImageClick: () -> Unit,
+    onImageLongClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val itemModifier = Modifier
+        .aspectRatio(1f) // Kvadratni prikaz za svaku sliku
+        .clip(RoundedCornerShape(8.dp))
+        .combinedClickable(
+            onClick = onImageClick,
+            onLongClick = onImageLongClick // Omogući dugi klik
+        )
+
+    Box(
+        modifier = itemModifier,
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(uri)
+                .crossfade(true)
+                .build(),
+            contentDescription = "Slika iz galerije",
+            contentScale = ContentScale.Crop, // Crop da popuni kvadrat
+            modifier = Modifier.fillMaxSize(),
+            // Placeholder dok se slika učitava
+            placeholder = painterResource(id = R.drawable.ic_launcher_background), // Zamijenite s vašim placeholderom
+            error = painterResource(id = R.drawable.ic_launcher_foreground) // Zamijenite slikom za grešku
+        )
+
+        if (isInDeleteMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        if (isSelectedForDeletion) Color.Black.copy(alpha = 0.5f)
+                        else Color.Transparent
+                    )
+            ) {
+                if (isSelectedForDeletion) {
+                    Icon(
+                        imageVector = Icons.Filled.CheckCircle,
+                        contentDescription = "Odabrano za brisanje",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(48.dp)
+                    )
+                }
+            }
         }
     }
 }
