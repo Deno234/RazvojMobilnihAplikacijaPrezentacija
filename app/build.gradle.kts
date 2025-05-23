@@ -60,6 +60,7 @@ dependencies {
     implementation(libs.activity.ktx)
     implementation(libs.icons.core)
     implementation(libs.icons.extended)
+    implementation(libs.guava.android)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

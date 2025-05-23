@@ -44,6 +44,11 @@ import com.example.razvojmobilnihaplikacijaprezentacija.ui.theme.RazvojMobilnihA
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch // Osigurajte da je MainScope importiran ako ga koristite ili koristite rememberCoroutineScope
 import java.util.concurrent.TimeUnit
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import android.content.ComponentName
+import androidx.core.content.ContextCompat
+import com.google.common.util.concurrent.ListenableFuture
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -621,13 +626,128 @@ fun VideoPlayerScreen(navController: NavHostController) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BackgroundAudioScreen(navController: NavHostController) {
+    val context = LocalContext.current
+
+    var inputUrl by remember { mutableStateOf("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3") } // Default URL za test
+    var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
+
+    var mediaController by remember { mutableStateOf<MediaController?>(null) }
+    var controllerFutureHolder by remember { mutableStateOf<ListenableFuture<MediaController>?>(null) }
+
+    var isPlaying by remember { mutableStateOf(false) }
+    var currentPosition by remember { mutableLongStateOf(0L) }
+    var duration by remember { mutableLongStateOf(0L) }
+    var currentMediaIdInController by remember { mutableStateOf<String?>(null) }
+
+    // Povezivanje s MediaControllerom
+    DisposableEffect(context) {
+        Log.d("BackgroundAudioScreen", "Pokretanje DisposableEffect za MediaController")
+        val sessionToken = SessionToken(context, ComponentName(context, MediaPlaybackService::class.java))
+        val future = MediaController.Builder(context, sessionToken).buildAsync()
+        controllerFutureHolder = future
+
+        future.addListener({
+            try {
+                val controller = future.get()
+                Log.d("BackgroundAudioScreen", "MediaController povezan: $controller")
+                mediaController = controller
+
+                val playerListener = object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlayingValue: Boolean) {
+                        Log.d("BackgroundAudioScreen", "UI Listener: isPlaying promijenjeno na $isPlayingValue")
+                        isPlaying = isPlayingValue
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        Log.d("BackgroundAudioScreen", "UI Listener: playbackState promijenjen na $playbackState")
+                        if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
+                            duration = controller.duration.coerceAtLeast(0L)
+                            currentPosition = controller.currentPosition.coerceAtLeast(0L)
+                        }
+                        if (playbackState == Player.STATE_ENDED) {
+                            isPlaying = false
+                        }
+                    }
+
+                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                        Log.d("BackgroundAudioScreen", "UI Listener: mediaItem prebačen na ${mediaItem?.mediaId}")
+                        currentMediaIdInController = mediaItem?.mediaId
+                        duration = controller.duration.coerceAtLeast(0L)
+                        currentPosition = controller.currentPosition.coerceAtLeast(0L)
+                        isPlaying = controller.isPlaying
+                    }
+                }
+                controller.addListener(playerListener)
+
+                // Inicijalno dohvaćanje stanja
+                isPlaying = controller.isPlaying
+                duration = controller.duration.coerceAtLeast(0L)
+                currentPosition = controller.currentPosition.coerceAtLeast(0L)
+                currentMediaIdInController = controller.currentMediaItem?.mediaId
+
+            } catch (e: Exception) {
+                Log.e("BackgroundAudioScreen", "Greška pri povezivanju MediaController-a", e)
+                Toast.makeText(context, "Greška: Audio servis nije dostupan.", Toast.LENGTH_LONG).show()
+            }
+        }, ContextCompat.getMainExecutor(context))
+
+        onDispose {
+            Log.d("BackgroundAudioScreen", "Otpustanje MediaController-a")
+            controllerFutureHolder?.let { MediaController.releaseFuture(it) } // Ispravno otpuštanje
+            // mediaController?.release() // Ne treba dvaput, releaseFuture() to rješava ako je future uspješan
+            mediaController = null
+            controllerFutureHolder = null
+        }
+    }
+
+    // Korutina za periodično ažuriranje pozicije (slidera)
+    LaunchedEffect(mediaController, isPlaying) {
+        if (mediaController != null && isPlaying) {
+            while (isPlaying && mediaController != null) {
+                currentPosition = mediaController?.currentPosition?.coerceAtLeast(0L) ?: currentPosition
+                delay(250)
+            }
+        } else if (mediaController != null && !isPlaying) {
+            currentPosition = mediaController?.currentPosition?.coerceAtLeast(0L) ?: currentPosition
+        }
+    }
+
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri: Uri? ->
+            uri?.let {
+                if (mediaController == null) {
+                    Toast.makeText(context, "Audio servis nije spreman.", Toast.LENGTH_SHORT).show()
+                    return@let
+                }
+                try {
+                    val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+                    selectedFileUri = it
+                    inputUrl = ""
+                    val mediaItem = MediaItem.Builder().setUri(it).setMediaId(it.toString()).build()
+                    mediaController?.setMediaItem(mediaItem)
+                    mediaController?.prepare()
+                    // mediaController?.play() // Opcionalno: automatski pokreni
+                    Log.d("BackgroundAudioScreen", "Lokalna datoteka odabrana: $it, poslana kontroleru.")
+                } catch (e: SecurityException) {
+                    Log.e("BackgroundAudioScreen", "Greška s dozvolom za URI: $uri", e)
+                }
+            }
+        }
+    )
+
+    val displayTitle = mediaController?.currentMediaItem?.mediaMetadata?.title?.toString()
+        ?: mediaController?.currentMediaItem?.mediaId?.substringAfterLast('/')
+        ?: "Nema učitanog medija"
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Pozadinska Reprodukcija (Koncept)") },
+                title = { Text("Audio Player (Pozadina)") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag") // Koristi standardnu ikonu
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
@@ -638,27 +758,134 @@ fun BackgroundAudioScreen(navController: NavHostController) {
                 .padding(innerPadding)
                 .fillMaxSize()
                 .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                "Za potpunu pozadinsku reprodukciju, potrebno je implementirati MediaSessionService i MediaSession.",
-                textAlign = TextAlign.Center
+            OutlinedTextField(
+                value = inputUrl,
+                onValueChange = { inputUrl = it },
+                label = { Text("Unesite URL audio datoteke") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                enabled = mediaController != null
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                "Ovo omogućuje da reprodukcija nastavi raditi kada je aplikacija u pozadini te pruža kontrole putem sistemskih notifikacija i vanjskih uređaja (npr. Bluetooth slušalice, pametni satovi).",
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = { /* Ovdje bi se pokrenuo servis */ }) {
-                Text("Pokreni pozadinsku reprodukciju (simulacija)")
+            Button(
+                onClick = {
+                    if (mediaController == null) {
+                        Toast.makeText(context, "Audio servis nije spreman.", Toast.LENGTH_SHORT).show()
+                        return@Button
+                    }
+                    if (inputUrl.isNotBlank()) {
+                        try {
+                            val mediaItem = MediaItem.Builder().setUri(inputUrl).setMediaId(inputUrl).build()
+                            mediaController?.setMediaItem(mediaItem)
+                            mediaController?.prepare()
+                            selectedFileUri = null
+                            Log.d("BackgroundAudioScreen", "URL poslan: $inputUrl")
+                        } catch (e: Exception) {
+                            Log.e("BackgroundAudioScreen", "Neispravan URL: $inputUrl", e)
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                enabled = mediaController != null
+            ) {
+                Text("Učitaj s URL-a")
             }
-            Text(
-                "Media3 biblioteka (media3-session) znatno pojednostavljuje ovu implementaciju.",
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.bodySmall
-            )
+
+            Text("ILI", modifier = Modifier.padding(vertical = 8.dp))
+
+            Button(
+                onClick = {
+                    if (mediaController != null) {
+                        audioPickerLauncher.launch(arrayOf("audio/*", "video/mp4")) // Dopušta sve audio i mp4
+                    } else {
+                        Toast.makeText(context, "Audio servis nije spreman.", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = mediaController != null
+            ) {
+                Icon(Icons.Filled.FolderOpen, contentDescription = "Odaberi datoteku", modifier = Modifier.padding(end = 8.dp))
+                Text("Odaberi audio s uređaja")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (mediaController?.currentMediaItem != null) {
+                Button(
+                    onClick = {
+                        mediaController?.stop() // Zaustavlja reprodukciju
+                        mediaController?.clearMediaItems() // Uklanja sve stavke
+                        // Resetiraj UI stanja koja ne dolaze direktno od kontrolera
+                        inputUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" // Vrati na default ili ostavi prazno
+                        selectedFileUri = null
+                        // Stanja isPlaying, duration, currentPosition će se ažurirati kroz listener na kontroleru
+                        Log.d("BackgroundAudioScreen", "Očisti odabir poslan kontroleru.")
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = mediaController != null
+                ) {
+                    Icon(Icons.Filled.Clear, contentDescription = "Očisti odabir", modifier = Modifier.padding(end = 8.dp))
+                    Text("Očisti odabir")
+                }
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = displayTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Slider(
+                    value = if (duration > 0) currentPosition.toFloat() / duration.toFloat() else 0f,
+                    onValueChange = { sliderValue ->
+                        mediaController?.seekTo((sliderValue * duration).toLong())
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = mediaController != null && (mediaController?.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) == true) && duration > 0
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(formatTime(currentPosition), style = MaterialTheme.typography.bodySmall)
+                    Text(formatTime(duration), style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                IconButton(
+                    onClick = {
+                        mediaController?.let { controller ->
+                            if (controller.isPlaying) {
+                                controller.pause()
+                            } else {
+                                if (controller.playbackState == Player.STATE_IDLE && controller.currentMediaItem == null) {
+                                    Toast.makeText(context, "Nema medija za reprodukciju.", Toast.LENGTH_SHORT).show()
+                                    return@let
+                                }
+                                // Ako je STATE_ENDED, play() će ga ponovno pokrenuti od početka.
+                                // Ako je STATE_IDLE ali ima item, play() će ga pripremiti i pokrenuti.
+                                controller.play()
+                            }
+                        }
+                    },
+                    modifier = Modifier.size(64.dp),
+                    enabled = mediaController != null
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Pauza" else "Play",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
