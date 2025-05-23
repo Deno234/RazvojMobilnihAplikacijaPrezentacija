@@ -70,7 +70,9 @@ import java.util.Locale
 import androidx.media3.transformer.Effects
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
-
+import androidx.media3.effect.Contrast
+import androidx.compose.material3.Slider
+import androidx.compose.material.icons.filled.Contrast
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -953,6 +955,8 @@ fun VideoEffectsScreen(navController: NavHostController) {
 
     var applyGrayscale by remember { mutableStateOf(false) }
     var rotationDegrees by remember { mutableFloatStateOf(0f) } // Za rotaciju
+    var applyContrast by remember { mutableStateOf(false) } // NOVO: Stanje za kontrast
+    var contrastValue by remember { mutableFloatStateOf(0f) }
 
     // Video picker
     val videoPickerLauncher = rememberLauncherForActivityResult(
@@ -1045,6 +1049,11 @@ fun VideoEffectsScreen(navController: NavHostController) {
                     )
                 }
 
+                if (applyContrast) { // NOVO: Dodavanje efekta kontrasta
+                    // Vrijednosti kontrasta: 0.0 (sivo) do npr. 2.0 (visok kontrast). 1.0 je original.
+                    effectsList.add(Contrast(contrastValue))
+                }
+
                 val editedMediaItem = EditedMediaItem.Builder(inputMediaItem)
                     .setEffects(Effects(listOf(), effectsList))
                     .build()
@@ -1123,17 +1132,31 @@ fun VideoEffectsScreen(navController: NavHostController) {
 
                 // Opcije za efekte
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = applyGrayscale, onCheckedChange = { applyGrayscale = it })
-                    Text("Crno-bijeli filter")
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Rotacija: ${rotationDegrees.toInt()}°")
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(onClick = { rotationDegrees = (rotationDegrees + 90) % 360 }) {
                         Icon(Icons.Filled.Rotate90DegreesCcw, "Rotiraj")
                     }
                 }
+                Spacer(modifier = Modifier.height(8.dp)) // NOVI EFEKT - KONTRAST
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = applyContrast, onCheckedChange = { applyContrast = it })
+                    Text("Primijeni Kontrast")
+                }
+                if (applyContrast) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.Contrast, contentDescription = "Kontrast", modifier = Modifier.padding(end = 8.dp))
+                        Slider(
+                            value = contrastValue,
+                            onValueChange = { contrastValue = it },
+                            valueRange = -1f..1f, // Raspon za kontrast, 1f je normalno
+                            steps = 20, // 20 koraka (0.0, 0.1, ..., 2.0)
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(String.format(Locale.US, "%.1f", contrastValue), modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Button(
