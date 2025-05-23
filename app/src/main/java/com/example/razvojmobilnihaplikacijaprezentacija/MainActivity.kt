@@ -408,41 +408,103 @@ fun AudioPlayerScreen(navController: NavHostController) {
     }
 }
 
-@SuppressLint("OpaqueUnitKey")
+@SuppressLint("OpaqueUnitKey") // Za DisposableEffect(Unit)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VideoPlayerScreen(navController: NavHostController) {
     val context = LocalContext.current
-    val videoUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4"
+
+    var inputUrl by remember { mutableStateOf("") }
+    var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
+    var currentMediaItemForPlayer by remember { mutableStateOf<MediaItem?>(null) }
 
     val exoPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(videoUrl))
-            prepare()
-            // playWhenReady = true
+        ExoPlayer.Builder(context).build()
+        // Ne pripremamo player odmah, već kada se postavi MediaItem
+    }
+
+    var isPlaying by remember { mutableStateOf(false) } // Pratimo je li player trebao svirati
+
+    // ActivityResultLauncher za odabir video datoteke
+    val videoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri: Uri? ->
+            uri?.let {
+                try {
+                    val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+                    selectedFileUri = it
+                    inputUrl = "" // Očisti URL polje
+                    currentMediaItemForPlayer = MediaItem.fromUri(it)
+                } catch (e: SecurityException) {
+                    Log.e("VideoPlayer", "Nije moguće dobiti trajnu dozvolu za URI: $uri", e)
+                    Toast.makeText(context, "Greška pri odabiru datoteke: dozvola odbijena.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    )
+
+    LaunchedEffect(currentMediaItemForPlayer) {
+        currentMediaItemForPlayer?.let { item ->
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            exoPlayer.setMediaItem(item)
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = true // Počni reprodukciju čim je spremno
+            Log.d("VideoPlayer", "Novi MediaItem postavljen: ${item.mediaId}")
+        } ?: run {
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            Log.d("VideoPlayer", "MediaItem očišćen.")
         }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlayingValue: Boolean) {
+                isPlaying = isPlayingValue
+            }
+            // Možete dodati i druge evente ako je potrebno, npr. onPlaybackStateChanged
+        }
+        exoPlayer.addListener(listener)
+
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE -> exoPlayer.pause()
-                Lifecycle.Event.ON_RESUME -> { /* exoPlayer.play() */ }
+                Lifecycle.Event.ON_START -> {
+                }
+                Lifecycle.Event.ON_STOP -> { // ON_STOP je bolji od ON_PAUSE za potpuno zaustavljanje resursa
+                    // Čuvamo stanje playWhenReady prije pauziranja
+                    // isPlaying = exoPlayer.playWhenReady
+                    // exoPlayer.playWhenReady = false // Pauziraj i oslobodi resurse
+                    if (exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                    }
+                }
                 else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
+
         onDispose {
+            exoPlayer.removeListener(listener)
             lifecycleOwner.lifecycle.removeObserver(observer)
+            // exoPlayer.release() // Oslobađanje će se dogoditi u donjem DisposableEffect(Unit)
         }
     }
 
+    // Oslobađanje playera kada composable napusti stablo
     DisposableEffect(Unit) {
         onDispose {
             exoPlayer.release()
+            Log.d("VideoPlayer", "ExoPlayer oslobođen.")
         }
     }
+
+    val displayTitle = currentMediaItemForPlayer?.mediaMetadata?.title?.toString()
+        ?: selectedFileUri?.lastPathSegment
+        ?: if (inputUrl.isNotBlank() && currentMediaItemForPlayer?.mediaId == inputUrl) inputUrl.substringAfterLast('/') else null
+            ?: "Nema učitanog videa"
 
     Scaffold(
         topBar = {
@@ -450,7 +512,7 @@ fun VideoPlayerScreen(navController: NavHostController) {
                 title = { Text("Video Player") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag") // Koristi standardnu ikonu
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
@@ -459,20 +521,99 @@ fun VideoPlayerScreen(navController: NavHostController) {
         Column(
             modifier = Modifier
                 .padding(innerPadding)
-                .fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        player = exoPlayer
+            OutlinedTextField(
+                value = inputUrl,
+                onValueChange = { inputUrl = it },
+                label = { Text("Unesite URL video datoteke") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Button(
+                onClick = {
+                    if (inputUrl.isNotBlank()) {
+                        try {
+                            currentMediaItemForPlayer = MediaItem.fromUri(inputUrl)
+                            selectedFileUri = null
+                        } catch (e: Exception) {
+                            Log.e("VideoPlayer", "Neispravan URL: $inputUrl", e)
+                            Toast.makeText(context, "Neispravan URL", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(context, "Molimo unesite URL", Toast.LENGTH_SHORT).show()
                     }
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16 / 9f)
-            )
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            ) {
+                Text("Učitaj s URL-a")
+            }
+
+            Text("ILI", modifier = Modifier.padding(vertical = 8.dp))
+
+            Button(
+                onClick = {
+                    // Pokreni odabir za video datoteke (npr. MP4, MKV, WebM itd.)
+                    videoPickerLauncher.launch(arrayOf("video/*"))
+                    // Možete biti specifičniji: arrayOf("video/mp4", "video/x-matroska")
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.FolderOpen, contentDescription = "Odaberi datoteku", modifier = Modifier.padding(end = 8.dp))
+                Text("Odaberi video s uređaja")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (currentMediaItemForPlayer != null) {
+                Button(
+                    onClick = {
+                        currentMediaItemForPlayer = null
+                        inputUrl = ""
+                        selectedFileUri = null
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Clear, contentDescription = "Očisti odabir", modifier = Modifier.padding(end = 8.dp))
+                    Text("Očisti odabir")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(displayTitle, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // PlayerView za prikaz videa
+            if (currentMediaItemForPlayer != null) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = exoPlayer
+                            // Možete prilagoditi PlayerView, npr.:
+                            // useController = true (default)
+                            // controllerShowTimeoutMs = 3000
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16 / 9f) // Prilagodite omjer slike prema potrebi
+                )
+            } else {
+                // Prikaz nečega dok video nije učitan
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16 / 9f)
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Odaberite video za reprodukciju.")
+                }
+            }
         }
     }
 }
