@@ -1,97 +1,86 @@
 package com.example.razvojmobilnihaplikacijaprezentacija // Prilagodite vašem paketu
 
+import android.app.Application
 import android.net.Uri
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
-class PhotoViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel() {
+class PhotoViewModel(application: Application) : AndroidViewModel(application) {
 
-    companion object {
-        private const val IMAGE_URIS_KEY = "imageUrisKey"
-        private const val SELECTED_FOR_DELETION_KEY = "selectedForDeletionKey"
-        private const val IS_IN_DELETE_MODE_KEY = "isInDeleteModeKey"
-    }
+    val imageUris: SnapshotStateList<Uri> = mutableStateListOf()
+    val selectedImagesForDeletion: SnapshotStateList<Uri> = mutableStateListOf()
 
-    // Lista URI-ja slika u galeriji
-    val imageUris: SnapshotStateList<Uri> = mutableStateListOf<Uri>().also { list ->
-        savedStateHandle.get<List<String>>(IMAGE_URIS_KEY)?.let { savedUriStrings ->
-            list.addAll(savedUriStrings.map { Uri.parse(it) })
+    var isInDeleteMode by mutableStateOf(false)
+        private set
+
+    init {
+        viewModelScope.launch {
+            getPhotoUris(application).collectLatest { uriStrings ->
+                imageUris.clear()
+                imageUris.addAll(uriStrings.map { Uri.parse(it) })
+            }
         }
     }
 
-    // Lista URI-ja slika odabranih za brisanje
-    val selectedImagesForDeletion: SnapshotStateList<Uri> = mutableStateListOf<Uri>().also { list ->
-        savedStateHandle.get<List<String>>(SELECTED_FOR_DELETION_KEY)?.let { savedSelectedUris ->
-            list.addAll(savedSelectedUris.map { Uri.parse(it) })
+    private fun persistImages() {
+        viewModelScope.launch {
+            savePhotoUris(getApplication(), imageUris.map { it.toString() })
         }
     }
 
-    // Zastavica za mod brisanja
-    var isInDeleteMode: Boolean
-        get() = savedStateHandle.get<Boolean>(IS_IN_DELETE_MODE_KEY) ?: false
-        set(value) {
-            savedStateHandle[IS_IN_DELETE_MODE_KEY] = value
-        }
+    private fun setDeleteMode(enabled: Boolean) {
+        isInDeleteMode = enabled
+    }
 
     fun addUris(newUris: List<Uri>) {
         val urisToAdd = newUris.filter { uri -> !imageUris.contains(uri) }
         if (urisToAdd.isNotEmpty()) {
             imageUris.addAll(urisToAdd)
-            saveImageUrisToSavedState()
+            persistImages()
         }
     }
 
     fun removeSelectedUris() {
         if (imageUris.removeAll(selectedImagesForDeletion.toSet())) {
-            saveImageUrisToSavedState()
+            persistImages()
         }
         selectedImagesForDeletion.clear()
-        saveSelectedForDeletionToSavedState() // Spremi praznu listu
-        isInDeleteMode = false // Automatski izađi iz moda brisanja
+        setDeleteMode(false)
     }
 
     fun clearAllUris() {
         imageUris.clear()
         selectedImagesForDeletion.clear()
-        saveImageUrisToSavedState()
-        saveSelectedForDeletionToSavedState()
-        isInDeleteMode = false
+        persistImages()
+        setDeleteMode(false)
     }
 
     fun enterDeleteMode(imageUri: Uri) {
-        isInDeleteMode = true
+        setDeleteMode(true)
         if (!selectedImagesForDeletion.contains(imageUri)) {
             selectedImagesForDeletion.add(imageUri)
-            saveSelectedForDeletionToSavedState()
         }
     }
 
     fun exitDeleteModeAndClearSelection() {
-        isInDeleteMode = false
+        setDeleteMode(false)
         selectedImagesForDeletion.clear()
-        saveSelectedForDeletionToSavedState()
     }
 
     fun toggleImageSelectionForDeletion(imageUri: Uri) {
         if (selectedImagesForDeletion.contains(imageUri)) {
             selectedImagesForDeletion.remove(imageUri)
-            if (selectedImagesForDeletion.isEmpty()) {
-                // Opcionalno: Ako je lista prazna, automatski izađi iz delete moda
-                // isInDeleteMode = false
-            }
         } else {
             selectedImagesForDeletion.add(imageUri)
         }
-        saveSelectedForDeletionToSavedState()
-    }
-
-    private fun saveImageUrisToSavedState() {
-        savedStateHandle[IMAGE_URIS_KEY] = imageUris.map { it.toString() }
-    }
-
-    private fun saveSelectedForDeletionToSavedState() {
-        savedStateHandle[SELECTED_FOR_DELETION_KEY] = selectedImagesForDeletion.map { it.toString() }
     }
 }
+

@@ -63,6 +63,7 @@ dependencies {
     implementation(libs.icons.extended)
     implementation(libs.guava.android)
     implementation(libs.viewModel.savedstate)
+    implementation(libs.datastore.preferences)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

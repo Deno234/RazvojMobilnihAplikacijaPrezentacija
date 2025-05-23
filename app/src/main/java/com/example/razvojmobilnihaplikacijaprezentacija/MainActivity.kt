@@ -1,6 +1,7 @@
 package com.example.razvojmobilnihaplikacijaprezentacija
 
 import android.annotation.SuppressLint
+import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -11,7 +12,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack // Standardni import
@@ -51,7 +51,6 @@ import android.os.Environment
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -93,6 +92,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.PlaybackException
 import androidx.media3.effect.Brightness
@@ -1429,14 +1430,20 @@ fun VideoPreview(uri: Uri, modifier: Modifier = Modifier, autoPlay: Boolean = fa
 }
 
 // TOP-LEVEL Composable funkcija
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) // Dodaj ExperimentalFoundationApi za combinedClickable
+@OptIn(ExperimentalMaterial3Api::class) // Dodaj ExperimentalFoundationApi za combinedClickable
 @Composable
 fun PhotoViewerScreen(
-    navController: NavHostController,
-    photoViewModel: PhotoViewModel = viewModel() // Dohvati instancu PhotoViewModela
+    navController: NavHostController
 ) {
     val context = LocalContext.current
-
+    val photoViewModel: PhotoViewModel = viewModel(
+        factory = object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                @Suppress("UNCHECKED_CAST")
+                return PhotoViewModel(context.applicationContext as Application) as T
+            }
+        }
+    )
     // Dohvati stanja iz ViewModela
     // Ne trebamo 'remember' za ova stanja jer ih ViewModel drži i preživljava rekompozicije
     // i promjene konfiguracije. SnapshotStateList će automatski triggerati rekompoziciju.
@@ -1451,15 +1458,34 @@ fun PhotoViewerScreen(
         onResult = { uris ->
             if (uris.isNotEmpty()) {
                 Log.d("PhotoPicker", "Odabrano URI-ja: ${uris.size}")
-                photoViewModel.addUris(uris)
                 // Opcionalno, obavijesti korisnika
-                val newCount = uris.count { uri -> !imageUris.contains(uri) } // Provjeri koliko je stvarno novih
-                if (newCount < uris.size && newCount > 0) {
-                    Toast.makeText(context, "$newCount slika dodano. Ostale su već u galeriji.", Toast.LENGTH_SHORT).show()
-                } else if (newCount == uris.size && newCount > 0) {
-                    // Sve su nove
-                } else if (uris.isNotEmpty() && newCount == 0) {
-                    Toast.makeText(context, "Sve odabrane slike su već u galeriji.", Toast.LENGTH_SHORT).show()
+                val existingUriStrings = imageUris.map { it.toString() }.toSet()
+                val newUris = uris.filter { it.toString() !in existingUriStrings }
+
+                val contentResolver = context.contentResolver
+                newUris.forEach { uri ->
+                    try {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                    } catch (e: SecurityException) {
+                        Log.e("PhotoPicker", "Dozvola odbijena za: $uri", e)
+                    }
+                }
+
+                photoViewModel.addUris(newUris)
+
+                when {
+                    newUris.isEmpty() -> {
+                        Toast.makeText(context, "Sve odabrane slike su već u galeriji.", Toast.LENGTH_SHORT).show()
+                    }
+                    newUris.size < uris.size -> {
+                        Toast.makeText(context, "${newUris.size} slika dodano. Ostale su već u galeriji.", Toast.LENGTH_SHORT).show()
+                    }
+                    else -> {
+                        // Sve su nove – ne moraš prikazivati ništa
+                    }
                 }
             }
         }
@@ -1507,8 +1533,15 @@ fun PhotoViewerScreen(
                 .fillMaxSize()
         ) {
             if (imageUris.isEmpty()) {
-                Box() {
-                    Text("Nema slika u galeriji")
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Nema slika u galeriji",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             } else {
                 LazyVerticalGrid(
@@ -1518,7 +1551,7 @@ fun PhotoViewerScreen(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    itemsIndexed(imageUris, key = { _, uri -> uri.toString() }) { index, uri ->
+                    itemsIndexed(imageUris, key = { _, uri -> uri.toString() }) { _, uri ->
                         GalleryImageItem(
                             uri = uri,
                             isInDeleteMode = photoViewModel.isInDeleteMode, // Koristi iz ViewModela
