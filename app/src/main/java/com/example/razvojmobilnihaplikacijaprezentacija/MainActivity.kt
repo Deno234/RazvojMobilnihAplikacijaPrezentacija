@@ -45,7 +45,12 @@ import java.util.concurrent.TimeUnit
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import android.content.ComponentName
+import android.content.ContentValues
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -99,6 +104,7 @@ import androidx.media3.effect.Brightness
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.core.net.toUri
+import android.Manifest
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1407,7 +1413,98 @@ fun PhotoViewerScreen(
     val imageUris = photoViewModel.imageUris // lista URI-ja slika koje su prikazane u galeriji
     val selectedImagesForDeletion = photoViewModel.selectedImagesForDeletion // lista slika koje je korisnik označio za brisanje
 
+    val capturedImageUri = remember { mutableStateOf<Uri?>(null) }
+    var expanded by remember { mutableStateOf(false) }
+
     var showDeleteConfirmationDialog by remember { mutableStateOf(false) }
+
+    // Stanje koje će pokrenuti akciju slikanja nakon što je dozvola odobrena
+    var launchCameraActionPending by remember { mutableStateOf(false) }
+
+    // Launcher za traženje dozvole za kameru
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted: Boolean ->
+            if (isGranted) {
+                // Dozvola je odobrena, postavi stanje za pokretanje kamere
+                launchCameraActionPending = true
+            } else {
+                // Korisnik je odbio dozvolu
+                Toast.makeText(context, "Dozvola za kameru je odbijena.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    )
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+        onResult = { success ->
+            val uriToProcess = capturedImageUri.value // URI koji je korišten za pokretanje kamere
+
+            Log.d("PhotoViewerScreen", "cameraLauncher onResult: success = $success, uriToProcess = $uriToProcess") // DODAJTE LOG
+
+            if (success && uriToProcess != null) {
+                Log.d("PhotoViewerScreen", "Slika uspješno snimljena, obrađujem URI: $uriToProcess") // DODAJTE LOG
+                // Za Android Q i novije, označi sliku kao da više nije pending
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val updateValues = ContentValues().apply {
+                        put(MediaStore.Images.Media.IS_PENDING, 0)
+                    }
+                    try {
+                        val updatedRows = context.contentResolver.update(uriToProcess, updateValues, null, null)
+                        Log.d("PhotoViewerScreen", "MediaStore.Images.Media.IS_PENDING postavljen na 0. Ažurirano redaka: $updatedRows") // DODAJTE LOG
+                        if (updatedRows == 0) {
+                            Log.w("PhotoViewerScreen", "UPOZORENJE: IS_PENDING nije ažuriran, slika možda neće biti vidljiva.")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("PhotoViewerScreen", "Greška pri ažuriranju IS_PENDING za URI: $uriToProcess", e) // DODAJTE LOG ZA GREŠKU
+                    }
+                }
+
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uriToProcess,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                    Log.d("PhotoViewerScreen", "Trajna dozvola dobivena za URI: $uriToProcess") // DODAJTE LOG
+                } catch (e: SecurityException) {
+                    Log.e("PhotoViewerScreen", "Nije uspjelo dobivanje trajne dozvole za URI: $uriToProcess", e)
+                }
+
+                photoViewModel.addUris(listOf(uriToProcess)) // Provjerite radi li ovo kako treba
+                Log.d("PhotoViewerScreen", "URI dodan u photoViewModel: $uriToProcess") // DODAJTE LOG
+                Toast.makeText(context, "Slika snimljena i dodana u galeriju", Toast.LENGTH_SHORT).show()
+
+            } else if (uriToProcess != null) {
+                // Ako slikanje nije uspjelo, ali je URI kreiran (bio je pending), obriši ga
+                Log.w("PhotoViewerScreen", "Slikanje neuspješno ili otkazano. Brišem URI: $uriToProcess") // DODAJTE LOG
+                try {
+                    val deletedRows = context.contentResolver.delete(uriToProcess, null, null)
+                    Log.d("PhotoViewerScreen", "Pending URI obrisan. Obrisano redaka: $deletedRows") // DODAJTE LOG
+                } catch (e: Exception) {
+                    Log.e("PhotoViewerScreen", "Greška pri brisanju pending URI-ja: $uriToProcess", e) // DODAJTE LOG ZA GREŠKU
+                }
+                Toast.makeText(context, "Slikanje otkazano ili neuspješno.", Toast.LENGTH_SHORT).show()
+            } else {
+                Log.w("PhotoViewerScreen", "Slikanje neuspješno, URI je null.") // DODAJTE LOG
+            }
+            // Očisti capturedImageUri.value bez obzira na ishod da se pripremi za sljedeće slikanje
+            capturedImageUri.value = null
+        }
+    )
+
+    LaunchedEffect(launchCameraActionPending) {
+        if (launchCameraActionPending) {
+            val newUri = createImageUriWithFileProvider(context)
+            capturedImageUri.value = newUri // Važno: postaviti prije pokretanja kamere
+            if (newUri != null) {
+                cameraLauncher.launch(newUri) // cameraLauncher je vaš postojeći launcher za TakePicture
+            } else {
+                Toast.makeText(context, "Greška pri stvaranju URI-ja slike.", Toast.LENGTH_SHORT).show()
+            }
+            launchCameraActionPending = false // Resetiraj okidač
+        }
+    }
+
 
     val multiplePhotoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10), // maksimalno 10 slika za odabiranje iz galerije
@@ -1470,12 +1567,38 @@ fun PhotoViewerScreen(
         },
         floatingActionButton = {
             if (!photoViewModel.isInDeleteMode) {
-                FloatingActionButton(onClick = {
-                    multiplePhotoPickerLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                    )
-                }) {
+                FloatingActionButton(onClick = { expanded = true }) {
                     Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Dodaj Slike")
+
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Odaberi iz galerije") },
+                            onClick = {
+                                expanded = false
+                                multiplePhotoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Slikaj kamerom") },
+                            onClick = {
+                                expanded = false
+                                when (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)) {
+                                    PackageManager.PERMISSION_GRANTED -> {
+                                        launchCameraActionPending = true
+                                    }
+                                    else -> {
+                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -1551,6 +1674,20 @@ fun PhotoViewerScreen(
                 }
             )
         }
+    }
+}
+
+fun createImageUriWithFileProvider(context: Context): Uri? {
+    return try {
+        val file = File(context.externalCacheDir, "photo_${System.currentTimeMillis()}.jpg")
+        FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            file
+        )
+    } catch (e: Exception) {
+        Log.e("FileProvider", "Greška pri stvaranju URI-ja s FileProviderom", e)
+        null
     }
 }
 
