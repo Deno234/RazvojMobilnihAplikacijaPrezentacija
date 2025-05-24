@@ -1,4 +1,4 @@
-package com.example.razvojmobilnihaplikacijaprezentacija // Prilagodite vašem paketu
+package com.example.razvojmobilnihaplikacijaprezentacija
 
 import android.app.Application
 import android.net.Uri
@@ -8,10 +8,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import androidx.core.net.toUri
 
 class PhotoViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -22,10 +22,10 @@ class PhotoViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     init {
-        viewModelScope.launch {
+        viewModelScope.launch { // korutina -> asinkrono izvršavanje
             getPhotoUris(application).collectLatest { uriStrings ->
                 imageUris.clear()
-                imageUris.addAll(uriStrings.map { Uri.parse(it) })
+                imageUris.addAll(uriStrings.map { it.toUri() })
             }
         }
     }
@@ -53,13 +53,6 @@ class PhotoViewModel(application: Application) : AndroidViewModel(application) {
             persistImages()
         }
         selectedImagesForDeletion.clear()
-        setDeleteMode(false)
-    }
-
-    fun clearAllUris() {
-        imageUris.clear()
-        selectedImagesForDeletion.clear()
-        persistImages()
         setDeleteMode(false)
     }
 

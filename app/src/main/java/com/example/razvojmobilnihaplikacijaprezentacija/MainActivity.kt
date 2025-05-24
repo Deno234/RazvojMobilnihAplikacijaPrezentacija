@@ -14,10 +14,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack // Standardni import
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Pause // Import za Pause ikonu
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,7 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -42,7 +40,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.razvojmobilnihaplikacijaprezentacija.ui.theme.RazvojMobilnihAplikacijaPrezentacijaTheme
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch // Osigurajte da je MainScope importiran ako ga koristite ili koristite rememberCoroutineScope
+import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -58,6 +56,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.CheckCircle
@@ -99,6 +98,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.effect.Brightness
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import androidx.core.net.toUri
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,14 +115,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// Modificirajte AppNavigation da prihvati startDestinationFromIntent
 @Composable
 fun AppNavigation(navController: NavHostController, startDestinationFromIntent: String?) {
     // Određivanje stvarne početne destinacije
     val actualStartDestination = if (startDestinationFromIntent == "background_audio_screen") {
         "background_audio_screen"
     } else {
-        "main_screen" // Vaša defaultna početna destinacija
+        "main_screen"
     }
     Log.d("AppNavigation", "Actual start destination: $actualStartDestination")
 
@@ -149,20 +148,16 @@ fun AppNavigation(navController: NavHostController, startDestinationFromIntent: 
         composable("image_detail_screen/{imageUri}") { backStackEntry ->
             val imageUriString = backStackEntry.arguments?.getString("imageUri")
             imageUriString?.let {
-                ImageDetailScreen(navController = navController, imageUri = Uri.parse(it)) // Proslijedi i navController za natrag
+                ImageDetailScreen(navController = navController, imageUri = it.toUri()) // Proslijedi i navController za natrag
             }
         }
     }
 
-    // Ako je MainActivity pokrenuta s namjerom da ide na specifični ekran, navigiraj tamo
-    // Ovo je korisno ako je aplikacija već bila pokrenuta, ali ne na željenom ekranu
-    // OVO SE MOŽE PREMJESTITI U onNewIntent AKO JE POTREBNO
     LaunchedEffect(startDestinationFromIntent) {
         if (startDestinationFromIntent == "background_audio_screen" && navController.currentDestination?.route != "background_audio_screen") {
             Log.d("AppNavigation", "Navigating to background_audio_screen due to intent.")
             navController.navigate("background_audio_screen") {
-                // Opcionalno, očisti backstack do main_screen ako je to željeno ponašanje
-                popUpTo("main_screen") { inclusive = false } // Ostavi main_screen u backstacku
+                popUpTo("main_screen") { inclusive = false } // Ostavljanje main_screen u backstacku
                 launchSingleTop = true // Izbjegavaj višestruke instance istog ekrana
             }
         }
@@ -203,46 +198,43 @@ fun MainScreen(navController: NavHostController) {
     }
 }
 
-// Helper funkcija za formatiranje vremena (premještena na top-level)
 fun formatTime(timeMs: Long): String {
     val minutes = TimeUnit.MILLISECONDS.toMinutes(timeMs)
     val seconds = TimeUnit.MILLISECONDS.toSeconds(timeMs) - TimeUnit.MINUTES.toSeconds(minutes)
-    return String.format("%02d:%02d", minutes, seconds)
+    return String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class) //Zbog TopAppBar-a
 @Composable
 fun AudioPlayerScreen(navController: NavHostController) {
     val context = LocalContext.current
 
-    // Stanje za unos URL-a
-    var inputUrl by remember { mutableStateOf("") }
-    // Stanje za URI odabrane lokalne datoteke
-    var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
-    // MediaItem koji se trenutno koristi za reprodukciju
-    var currentMediaItemForPlayer by remember { mutableStateOf<MediaItem?>(null) }
+    var inputUrl by remember { mutableStateOf("") } // URL audio datoteke
+    var selectedFileUri by remember { mutableStateOf<Uri?>(null) } // URI lokalno odabrane datoteke
+    var currentMediaItemForPlayer by remember { mutableStateOf<MediaItem?>(null) } // Trenutni MediaItem za reprodukciju pomoću ExoPlayer-a
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build()
-        // Ne pripremamo player odmah, već kada se postavi MediaItem
     }
 
-    var isPlaying by remember { mutableStateOf(false) } // Inicijalno nije pokrenuto
-    var currentPosition by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(0L) }
-    val coroutineScope = rememberCoroutineScope()
+    var isPlaying by remember { mutableStateOf(false) } // Je li reprodukcija aktivna
+    var currentPosition by remember { mutableLongStateOf(0L) } // Trenutna pozicija reprodukcije
+    var duration by remember { mutableLongStateOf(0L) } // Ukupno trajanje videozapisa
+    val coroutineScope = rememberCoroutineScope() // periodično ažurira currentPosition
 
-    // ActivityResultLauncher za odabir audio datoteke
+    // Odabir audio datoteke
     val audioPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(), // Koristimo OpenDocument
+        contract = ActivityResultContracts.OpenDocument(), // Sustavni preglednik datoteka
         onResult = { uri: Uri? ->
             uri?.let {
-                // Važno: Zatražiti trajne dozvole za pristup URI-ju
                 try {
+                    // Dobivanje trajnog pristupa datoteci
                     val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
                     context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+
+                    // Postavljanje trenutnog MediaItem-a za reprodukciju
                     selectedFileUri = it
-                    inputUrl = "" // Očisti URL polje ako je datoteka odabrana
+                    inputUrl = ""
                     currentMediaItemForPlayer = MediaItem.fromUri(it)
                 } catch (e: SecurityException) {
                     Log.e("AudioPlayer", "Nije moguće dobiti trajnu dozvolu za URI: $uri", e)
@@ -252,30 +244,34 @@ fun AudioPlayerScreen(navController: NavHostController) {
         }
     )
 
-    // Reagiranje na promjenu MediaItem-a koji treba reproducirati
+    // Ažuriranje ExoPlayer-a kada se promijeni currentMediaItemForPlayer pomoću LaunchedEffect-a
     LaunchedEffect(currentMediaItemForPlayer) {
         currentMediaItemForPlayer?.let { item ->
-            exoPlayer.stop() // Zaustavi prethodnu reprodukciju ako je bilo
-            exoPlayer.clearMediaItems() // Ukloni stare iteme
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
             exoPlayer.setMediaItem(item)
-            exoPlayer.prepare()
-            isPlaying = false // Player je pripremljen, ali ne svira dok korisnik ne klikne play
+            exoPlayer.prepare() // Učita datoteku (ali još ne svira)
+            isPlaying = false
             currentPosition = 0L
-            duration = 0L // Ažurirat će se kada je player spreman
-            Log.d("AudioPlayer", "Novi MediaItem postavljen: ${item.mediaId}")
+            duration = 0L // Trajanje će se postaviti kada player bude spreman
         } ?: run { // Ako je currentMediaItemForPlayer null (npr. nakon "Očisti")
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
             isPlaying = false
             currentPosition = 0L
             duration = 0L
-            Log.d("AudioPlayer", "MediaItem očišćen.")
         }
     }
 
-    // ExoPlayer listener i životni ciklus
+    /*
+    DisposableEffect je Compose funkcija koja:
+    se aktivira kad se stvori Composable koji koristi exoPlayer
+    se očisti automatski kad taj Composable nestane s ekrana (ili se exoPlayer promijeni)
+    */
     DisposableEffect(exoPlayer) {
-        val listener = object : Player.Listener {
+        val listener = object : Player.Listener { // listener koji sluša događaje iz ExoPlayer-a i reagira na njih
+
+            // Ažurira Composable varijablu isPlaying kada se promijeni stanje (play/pause)
             override fun onIsPlayingChanged(isPlayingValue: Boolean) {
                 isPlaying = isPlayingValue
             }
@@ -283,59 +279,67 @@ fun AudioPlayerScreen(navController: NavHostController) {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     duration = exoPlayer.duration.coerceAtLeast(0L)
-                    Log.d("AudioPlayer", "Player spreman, trajanje: $duration")
                 } else if (playbackState == Player.STATE_ENDED) {
                     currentPosition = exoPlayer.duration.coerceAtLeast(0L)
                     isPlaying = false
-                    exoPlayer.seekTo(0) // Vrati na početak kad završi
-                    exoPlayer.pause()   // Osiguraj da je pauziran
-                    Log.d("AudioPlayer", "Reprodukcija završena.")
+                    exoPlayer.seekTo(0)
+                    exoPlayer.pause()
                 }
             }
 
             override fun onEvents(player: Player, events: Player.Events) {
+
+                // EVENT_TIMELINE_CHANGED -> promijenjen redoslijed pjesama, EVENT_PLAYBACK_STATE_CHANGED -> promijenjeno stanje playera
                 if (events.contains(Player.EVENT_TIMELINE_CHANGED) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
                     if (player.playbackState == Player.STATE_READY) {
                         duration = player.duration.coerceAtLeast(0L)
                     }
                 }
-                // Ažuriraj poziciju samo ako player svira ili ako se promijenila pozicija (npr. seek)
-                // ili ako se promijenilo stanje (npr. iz IDLE u READY).
+
+                // Ažuriraj redovno currentPosition, EVENT_POSITION_DISCONTINUITY -> korisnik je promijenio poziciju ručno
                 if (isPlaying || events.contains(Player.EVENT_POSITION_DISCONTINUITY) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
                     currentPosition = player.currentPosition
                 }
             }
+
         }
+
         exoPlayer.addListener(listener)
 
+        // Svakih 200 ms se ažurira currentPosition (dok player svira)
         val job = coroutineScope.launch {
             while (true) {
                 if (exoPlayer.playbackState == Player.STATE_READY && exoPlayer.isPlaying) {
                     currentPosition = exoPlayer.currentPosition
                 }
-                delay(200) // Češće ažuriranje za glađi slider
+                delay(200)
             }
         }
 
+        // Oslobađanje resursa kada Composable nestane
         onDispose {
             exoPlayer.removeListener(listener)
             job.cancel()
-            exoPlayer.release() // Oslobađanje ExoPlayera kada composable nestane
-            Log.d("AudioPlayer", "ExoPlayer oslobođen.")
+            exoPlayer.release()
         }
+
     }
 
     // Upravljanje reprodukcijom ovisno o životnom ciklusu composable-a
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, exoPlayer) { // Dodaj exoPlayer kao key ako ovisiš o njemu
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current //dohvaćanje trenutnog životnog ciklusa ekrana
+    DisposableEffect(lifecycleOwner, exoPlayer) { // Pokretanje ovisno o promjeni lifecycleOwner-a i exoPlayer-a
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> {
-                    if (exoPlayer.isPlaying) { // Pauziraj samo ako trenutno svira
+                    if (exoPlayer.isPlaying) {
                         exoPlayer.pause()
                     }
                 }
-                Lifecycle.Event.ON_RESUME -> { /* Ovdje možete odlučiti želite li nastaviti reprodukciju */ }
+                Lifecycle.Event.ON_RESUME -> {
+                    if (!exoPlayer.isPlaying) {
+                        exoPlayer.play()
+                    }
+                }
                 else -> {}
             }
         }
@@ -345,32 +349,29 @@ fun AudioPlayerScreen(navController: NavHostController) {
         }
     }
 
-    // Naslov za prikaz (iz URL-a, URI-ja ili metadata)
-    val displayTitle = currentMediaItemForPlayer?.mediaMetadata?.title?.toString()
-        ?: selectedFileUri?.lastPathSegment // Naziv datoteke iz URI-ja
+    val displayTitle = currentMediaItemForPlayer?.mediaMetadata?.title?.toString() // Title u metadata (npr. MP3 tag)
+        ?: selectedFileUri?.lastPathSegment // Title iz URI-ja ako je lokalno odabrana datoteka
         ?: if (inputUrl.isNotBlank() && currentMediaItemForPlayer?.mediaId == inputUrl) inputUrl.substringAfterLast('/') else null // Naziv iz URL-a
             ?: "Nema učitanog medija"
 
-
-    Scaffold(
+    Scaffold( // glavni container za ekran s elementima poput TopBar, BottomBar...
         topBar = {
             TopAppBar(
                 title = { Text("Audio Player") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
         }
-    ) { innerPadding ->
+    ) { innerPadding -> // uklapanje sadržaja ispod TopBar-a
         Column(
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
-            // verticalArrangement = Arrangement.Center // Uklonjeno da UI bude na vrhu
         ) {
             // Unos URL-a
             OutlinedTextField(
@@ -385,7 +386,7 @@ fun AudioPlayerScreen(navController: NavHostController) {
                     if (inputUrl.isNotBlank()) {
                         try {
                             currentMediaItemForPlayer = MediaItem.fromUri(inputUrl)
-                            selectedFileUri = null // Očisti odabir datoteke
+                            selectedFileUri = null
                         } catch (e: Exception) {
                             Log.e("AudioPlayer", "Neispravan URL: $inputUrl", e)
                             Toast.makeText(context, "Neispravan URL", Toast.LENGTH_SHORT).show()
@@ -404,8 +405,7 @@ fun AudioPlayerScreen(navController: NavHostController) {
             // Odabir datoteke s uređaja
             Button(
                 onClick = {
-                    audioPickerLauncher.launch(arrayOf("audio/mpeg", "audio/mp4", "video/mp4")) // Pokreni odabir za MP3 datoteke
-                    // Možete koristiti i "audio/*" za sve audio tipove
+                    audioPickerLauncher.launch(arrayOf("audio/mpeg", "audio/mp4", "video/mp4"))
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -430,12 +430,8 @@ fun AudioPlayerScreen(navController: NavHostController) {
                 }
             }
 
+            Spacer(modifier = Modifier.weight(1f))
 
-            Spacer(modifier = Modifier.weight(1f)) // Gura kontrole playera prema dolje ako nema puno sadržaja iznad
-
-            // Player kontrole (vidljive samo ako je nešto učitano)
-            // if (currentMediaItemForPlayer != null && (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING)) {
-            // Bolje je uvijek prikazati kontrole, ali ih onemogućiti ako player nije spreman
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth()
@@ -466,22 +462,20 @@ fun AudioPlayerScreen(navController: NavHostController) {
                 Spacer(modifier = Modifier.height(16.dp))
                 IconButton(
                     onClick = {
-                        if (currentMediaItemForPlayer != null) { // Omogući klik samo ako je nešto učitano
+                        if (currentMediaItemForPlayer != null) {
                             if (exoPlayer.isPlaying) {
                                 exoPlayer.pause()
                             } else {
                                 if (exoPlayer.playbackState == Player.STATE_IDLE || exoPlayer.playbackState == Player.STATE_ENDED) {
-                                    // Ako player nije pripremljen (npr. nakon greške ili prvog učitavanja bez auto-play)
-                                    // ili je završio, pripremi ga ponovno ili seekaj na početak i pokreni
-                                    exoPlayer.prepare() // Osiguraj da je pripremljen
-                                    exoPlayer.seekTo(0) // Kreni od početka ako je završio
+                                    exoPlayer.prepare()
+                                    exoPlayer.seekTo(0)
                                 }
                                 exoPlayer.play()
                             }
                         }
                     },
                     modifier = Modifier.size(64.dp),
-                    enabled = currentMediaItemForPlayer != null // Gumb je aktivan samo ako je nešto učitano
+                    enabled = currentMediaItemForPlayer != null
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -490,7 +484,7 @@ fun AudioPlayerScreen(navController: NavHostController) {
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(16.dp)) // Dodatni razmak na dnu
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
@@ -507,12 +501,11 @@ fun VideoPlayerScreen(navController: NavHostController) {
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build()
-        // Ne pripremamo player odmah, već kada se postavi MediaItem
     }
 
-    var isPlaying by remember { mutableStateOf(false) } // Pratimo je li player trebao svirati
+    var isPlaying by remember { mutableStateOf(false) }
 
-    // ActivityResultLauncher za odabir video datoteke
+    // Odabir video datoteke
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
         onResult = { uri: Uri? ->
@@ -520,8 +513,9 @@ fun VideoPlayerScreen(navController: NavHostController) {
                 try {
                     val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
                     context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+
                     selectedFileUri = it
-                    inputUrl = "" // Očisti URL polje
+                    inputUrl = ""
                     currentMediaItemForPlayer = MediaItem.fromUri(it)
                 } catch (e: SecurityException) {
                     Log.e("VideoPlayer", "Nije moguće dobiti trajnu dozvolu za URI: $uri", e)
@@ -538,32 +532,27 @@ fun VideoPlayerScreen(navController: NavHostController) {
             exoPlayer.setMediaItem(item)
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true // Počni reprodukciju čim je spremno
-            Log.d("VideoPlayer", "Novi MediaItem postavljen: ${item.mediaId}")
         } ?: run {
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
-            Log.d("VideoPlayer", "MediaItem očišćen.")
         }
     }
 
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
     DisposableEffect(lifecycleOwner, exoPlayer) {
+
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlayingValue: Boolean) {
                 isPlaying = isPlayingValue
             }
-            // Možete dodati i druge evente ako je potrebno, npr. onPlaybackStateChanged
         }
+
         exoPlayer.addListener(listener)
 
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> {
-                }
-                Lifecycle.Event.ON_STOP -> { // ON_STOP je bolji od ON_PAUSE za potpuno zaustavljanje resursa
-                    // Čuvamo stanje playWhenReady prije pauziranja
-                    // isPlaying = exoPlayer.playWhenReady
-                    // exoPlayer.playWhenReady = false // Pauziraj i oslobodi resurse
+                Lifecycle.Event.ON_STOP -> {
                     if (exoPlayer.isPlaying) {
                         exoPlayer.pause()
                     }
@@ -571,20 +560,19 @@ fun VideoPlayerScreen(navController: NavHostController) {
                 else -> {}
             }
         }
+
         lifecycleOwner.lifecycle.addObserver(observer)
 
         onDispose {
             exoPlayer.removeListener(listener)
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // exoPlayer.release() // Oslobađanje će se dogoditi u donjem DisposableEffect(Unit)
         }
     }
 
-    // Oslobađanje playera kada composable napusti stablo
+    // Oslobađanje playera kada composable napusti stablo (dešava se samo jednom -> Unit kao ključ)
     DisposableEffect(Unit) {
         onDispose {
             exoPlayer.release()
-            Log.d("VideoPlayer", "ExoPlayer oslobođen.")
         }
     }
 
@@ -599,7 +587,7 @@ fun VideoPlayerScreen(navController: NavHostController) {
                 title = { Text("Video Player") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
@@ -626,7 +614,6 @@ fun VideoPlayerScreen(navController: NavHostController) {
                             currentMediaItemForPlayer = MediaItem.fromUri(inputUrl)
                             selectedFileUri = null
                         } catch (e: Exception) {
-                            Log.e("VideoPlayer", "Neispravan URL: $inputUrl", e)
                             Toast.makeText(context, "Neispravan URL", Toast.LENGTH_SHORT).show()
                         }
                     } else {
@@ -642,9 +629,7 @@ fun VideoPlayerScreen(navController: NavHostController) {
 
             Button(
                 onClick = {
-                    // Pokreni odabir za video datoteke (npr. MP4, MKV, WebM itd.)
                     videoPickerLauncher.launch(arrayOf("video/*"))
-                    // Možete biti specifičniji: arrayOf("video/mp4", "video/x-matroska")
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -674,23 +659,21 @@ fun VideoPlayerScreen(navController: NavHostController) {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // PlayerView za prikaz videa
+            // PlayerView za prikaz videozapisa
             if (currentMediaItemForPlayer != null) {
                 AndroidView(
-                    factory = { ctx ->
+                    factory = { ctx -> // stvaranje novog PlayerView-a
                         PlayerView(ctx).apply {
                             player = exoPlayer
-                            // Možete prilagoditi PlayerView, npr.:
                             // useController = true (default)
-                            // controllerShowTimeoutMs = 3000
+                            // controllerShowTimeoutMs = 3000 -> 3 sekundi će ostati kontrole playera vidljive nakon što se pojave
                         }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(16 / 9f) // Prilagodite omjer slike prema potrebi
+                        .aspectRatio(16 / 9f)
                 )
             } else {
-                // Prikaz nečega dok video nije učitan
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -710,38 +693,35 @@ fun VideoPlayerScreen(navController: NavHostController) {
 fun BackgroundAudioScreen(navController: NavHostController) {
     val context = LocalContext.current
 
-    var inputUrl by remember { mutableStateOf("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3") } // Default URL za test
+    var inputUrl by remember { mutableStateOf("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3") }
     var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
 
-    var mediaController by remember { mutableStateOf<MediaController?>(null) }
-    var controllerFutureHolder by remember { mutableStateOf<ListenableFuture<MediaController>?>(null) }
+    var mediaController by remember { mutableStateOf<MediaController?>(null) } // Stanje koje će držati instancu MediaController-a nakon što se uspostavi veza sa servisom
+    var controllerFutureHolder by remember { mutableStateOf<ListenableFuture<MediaController>?>(null) } // Budući objekt (asinkrono dobivanje MediaController-a)
 
     var isPlaying by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
-    var currentMediaIdInController by remember { mutableStateOf<String?>(null) }
+    var currentMediaIdInController by remember { mutableStateOf<String?>(null) } // ID trenutno učitanog medija u MediaController
 
-    // Povezivanje s MediaControllerom
+    // Povezivanje s MediaControllerom (koji kontrolira pozadinsku reprodukciju kroz MediaPlaybackService)
     DisposableEffect(context) {
-        Log.d("BackgroundAudioScreen", "Pokretanje DisposableEffect za MediaController")
-        val sessionToken = SessionToken(context, ComponentName(context, MediaPlaybackService::class.java))
+        val sessionToken = SessionToken(context, ComponentName(context, MediaPlaybackService::class.java)) // identificira servis za reprodukciju s kojim želimo komunicirati - MediaPlaybackService
         val future = MediaController.Builder(context, sessionToken).buildAsync()
         controllerFutureHolder = future
 
         future.addListener({
             try {
-                val controller = future.get()
-                Log.d("BackgroundAudioScreen", "MediaController povezan: $controller")
+                val controller = future.get() // Kada je MediaController dostupan
                 mediaController = controller
 
                 val playerListener = object : Player.Listener {
+
                     override fun onIsPlayingChanged(isPlayingValue: Boolean) {
-                        Log.d("BackgroundAudioScreen", "UI Listener: isPlaying promijenjeno na $isPlayingValue")
                         isPlaying = isPlayingValue
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
-                        Log.d("BackgroundAudioScreen", "UI Listener: playbackState promijenjen na $playbackState")
                         if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
                             duration = controller.duration.coerceAtLeast(0L)
                             currentPosition = controller.currentPosition.coerceAtLeast(0L)
@@ -752,16 +732,16 @@ fun BackgroundAudioScreen(navController: NavHostController) {
                     }
 
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        Log.d("BackgroundAudioScreen", "UI Listener: mediaItem prebačen na ${mediaItem?.mediaId}")
                         currentMediaIdInController = mediaItem?.mediaId
                         duration = controller.duration.coerceAtLeast(0L)
                         currentPosition = controller.currentPosition.coerceAtLeast(0L)
                         isPlaying = controller.isPlaying
                     }
+
                 }
+
                 controller.addListener(playerListener)
 
-                // Inicijalno dohvaćanje stanja
                 isPlaying = controller.isPlaying
                 duration = controller.duration.coerceAtLeast(0L)
                 currentPosition = controller.currentPosition.coerceAtLeast(0L)
@@ -774,15 +754,13 @@ fun BackgroundAudioScreen(navController: NavHostController) {
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {
-            Log.d("BackgroundAudioScreen", "Otpustanje MediaController-a")
-            controllerFutureHolder?.let { MediaController.releaseFuture(it) } // Ispravno otpuštanje
-            // mediaController?.release() // Ne treba dvaput, releaseFuture() to rješava ako je future uspješan
+            controllerFutureHolder?.let { MediaController.releaseFuture(it) }
             mediaController = null
             controllerFutureHolder = null
         }
     }
 
-    // Korutina za periodično ažuriranje pozicije (slidera)
+    // Korutina za periodično ažuriranje pozicije slidera
     LaunchedEffect(mediaController, isPlaying) {
         if (mediaController != null && isPlaying) {
             while (isPlaying && mediaController != null) {
@@ -805,15 +783,16 @@ fun BackgroundAudioScreen(navController: NavHostController) {
                 try {
                     val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
                     context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+
                     selectedFileUri = it
                     inputUrl = ""
+
                     val mediaItem = MediaItem.Builder().setUri(it).setMediaId(it.toString()).build()
                     mediaController?.setMediaItem(mediaItem)
                     mediaController?.prepare()
-                    // mediaController?.play() // Opcionalno: automatski pokreni
-                    Log.d("BackgroundAudioScreen", "Lokalna datoteka odabrana: $it, poslana kontroleru.")
+                    // mediaController?.play() -> automatski pokreni
                 } catch (e: SecurityException) {
-                    Log.e("BackgroundAudioScreen", "Greška s dozvolom za URI: $uri", e)
+                    Toast.makeText(context, "Greška pri odabiru datoteke: dozvola odbijena.", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -829,7 +808,7 @@ fun BackgroundAudioScreen(navController: NavHostController) {
                 title = { Text("Audio Player (Pozadina)") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
@@ -862,9 +841,8 @@ fun BackgroundAudioScreen(navController: NavHostController) {
                             mediaController?.setMediaItem(mediaItem)
                             mediaController?.prepare()
                             selectedFileUri = null
-                            Log.d("BackgroundAudioScreen", "URL poslan: $inputUrl")
                         } catch (e: Exception) {
-                            Log.e("BackgroundAudioScreen", "Neispravan URL: $inputUrl", e)
+                            Toast.makeText(context, "Neispravan URL $inputUrl", Toast.LENGTH_LONG).show()
                         }
                     }
                 },
@@ -879,7 +857,7 @@ fun BackgroundAudioScreen(navController: NavHostController) {
             Button(
                 onClick = {
                     if (mediaController != null) {
-                        audioPickerLauncher.launch(arrayOf("audio/*", "video/mp4")) // Dopušta sve audio i mp4
+                        audioPickerLauncher.launch(arrayOf("audio/*", "video/mp4"))
                     } else {
                         Toast.makeText(context, "Audio servis nije spreman.", Toast.LENGTH_SHORT).show()
                     }
@@ -896,13 +874,11 @@ fun BackgroundAudioScreen(navController: NavHostController) {
             if (mediaController?.currentMediaItem != null || isPlaying) {
                 Button(
                     onClick = {
-                        mediaController?.stop() // Zaustavlja reprodukciju
-                        mediaController?.clearMediaItems() // Uklanja sve stavke
-                        // Resetiraj UI stanja koja ne dolaze direktno od kontrolera
-                        inputUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" // Vrati na default ili ostavi prazno
+                        mediaController?.stop()
+                        mediaController?.clearMediaItems()
+                        inputUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
                         selectedFileUri = null
                         // Stanja isPlaying, duration, currentPosition će se ažurirati kroz listener na kontroleru
-                        Log.d("BackgroundAudioScreen", "Očisti odabir poslan kontroleru.")
                     },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = mediaController != null
@@ -951,8 +927,6 @@ fun BackgroundAudioScreen(navController: NavHostController) {
                                     Toast.makeText(context, "Nema medija za reprodukciju.", Toast.LENGTH_SHORT).show()
                                     return@let
                                 }
-                                // Ako je STATE_ENDED, play() će ga ponovno pokrenuti od početka.
-                                // Ako je STATE_IDLE ali ima item, play() će ga pripremiti i pokrenuti.
                                 controller.play()
                             }
                         }
@@ -972,17 +946,18 @@ fun BackgroundAudioScreen(navController: NavHostController) {
     }
 }
 
-// VAŽNO: Ova funkcija mora biti TOP-LEVEL
 @androidx.annotation.OptIn(UnstableApi::class) // Zbog korištenja Transformer API-ja i Player.setVideoEffects
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VideoEffectsScreen(navController: NavHostController) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+
+    val coroutineScope = rememberCoroutineScope() // pokretanje asinkronih operacija (prikaz video transformacije)
     val snackbarHostState = remember { SnackbarHostState() }
 
     var inputVideoUri by remember { mutableStateOf<Uri?>(null) }
     var outputVideoUri by remember { mutableStateOf<Uri?>(null) }
+
     var transformationProgress by remember { mutableFloatStateOf(0f) }
     var isTransforming by remember { mutableStateOf(false) }
 
@@ -991,19 +966,15 @@ fun VideoEffectsScreen(navController: NavHostController) {
     var contrastValue by remember { mutableFloatStateOf(0f) }
     var applyBrightness by remember { mutableStateOf(false) }
     var brightnessValue by remember { mutableFloatStateOf(0f) }
-
     var applyMirror by remember { mutableStateOf(false) }
 
     // ExoPlayer za live preview efekata
-    // Unutar VideoEffectsScreen, gdje inicijalizirate previewExoPlayer
     val previewExoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ONE
+            repeatMode = Player.REPEAT_MODE_ONE // ponavljaj zauvijek
             addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
-                    Log.e("PreviewExoPlayer", "Player Error: ${error.message}", error)
-                    // Ovdje možete prikazati poruku korisniku putem SnackBar-a
-                    coroutineScope.launch { // Osigurajte da ste unutar coroutine scopea
+                    coroutineScope.launch {
                         snackbarHostState.showSnackbar(
                             message = "Greška pri prikazu previewa: ${error.errorCodeName}",
                             duration = SnackbarDuration.Long
@@ -1013,13 +984,12 @@ fun VideoEffectsScreen(navController: NavHostController) {
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     Log.d("PreviewExoPlayer", "Playback State: $playbackState")
-                    // Možete pratiti je li player došao u STATE_READY
                 }
             })
         }
     }
 
-    // Efekt koji ažurira preview player kada se promijene efekti ili ulazni video
+    // Prikaz live preview-a sa primenjenim efektima (samo nekim)
     LaunchedEffect(inputVideoUri, rotationDegrees) {
         inputVideoUri?.let { uri ->
             val currentEffectsList = mutableListOf<Effect>()
@@ -1027,22 +997,21 @@ fun VideoEffectsScreen(navController: NavHostController) {
                 currentEffectsList.add(ScaleAndRotateTransformation.Builder().setRotationDegrees(rotationDegrees).build())
             }
 
-            previewExoPlayer.stop() // Zaustavi trenutnu reprodukciju prije promjene
-            previewExoPlayer.clearMediaItems() // Očisti stare stavke
+            previewExoPlayer.stop()
+            previewExoPlayer.clearMediaItems()
 
-            previewExoPlayer.setVideoEffects(currentEffectsList) // Primijeni efekte na player
-            previewExoPlayer.setMediaItem(MediaItem.fromUri(uri)) // Postavi medijsku stavku
+            previewExoPlayer.setVideoEffects(currentEffectsList)
+            previewExoPlayer.setMediaItem(MediaItem.fromUri(uri))
             previewExoPlayer.prepare()
-            // previewExoPlayer.playWhenReady = true // Opcionalno, automatski pokreni preview
+            // previewExoPlayer.playWhenReady = true -> automatski pokreni preview
         } ?: run {
-            // Ako nema inputVideoUri, očisti preview player
+            // Ako nema inputVideoUri, čisti se preview player
             previewExoPlayer.stop()
             previewExoPlayer.clearMediaItems()
             previewExoPlayer.setVideoEffects(emptyList())
         }
     }
 
-    // Oslobađanje previewExoPlayer-a
     DisposableEffect(Unit) {
         onDispose {
             previewExoPlayer.release()
@@ -1055,13 +1024,10 @@ fun VideoEffectsScreen(navController: NavHostController) {
         onResult = { uri: Uri? ->
             uri?.let {
                 try {
-                    // context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     inputVideoUri = it
                     outputVideoUri = null
-                    coroutineScope.launch { snackbarHostState.showSnackbar("Odabran video: ${it.lastPathSegment?.take(50)}") }
-                    Log.d("VideoEffectsScreen", "Odabran video: $it")
+                    coroutineScope.launch { snackbarHostState.showSnackbar("Odabran video: ${it.lastPathSegment?.take(50)}", duration = SnackbarDuration.Short) }
                 } catch (e: SecurityException) {
-                    Log.e("VideoEffectsScreen", "Nije moguće dobiti trajnu dozvolu za URI: $uri", e)
                     coroutineScope.launch { snackbarHostState.showSnackbar("Greška s dozvolom za odabir.") }
                 }
             }
@@ -1073,11 +1039,10 @@ fun VideoEffectsScreen(navController: NavHostController) {
             override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                 isTransforming = false
                 transformationProgress = 1f
-                Log.d("VideoEffectsScreen", "Transformacija uspješna. Output: $outputVideoUri, Result: $exportResult")
                 coroutineScope.launch {
                     snackbarHostState.showSnackbar(
                         message = "Transformacija uspješna! ${outputVideoUri?.lastPathSegment?.take(30)}",
-                        duration = SnackbarDuration.Long
+                        duration = SnackbarDuration.Short
                     )
                 }
             }
@@ -1104,7 +1069,6 @@ fun VideoEffectsScreen(navController: NavHostController) {
 
         isTransforming = true
         transformationProgress = 0f
-        // Poruka o početku će se implicitno vidjeti kroz isTransforming = true (npr. "Transformiram...")
 
         val outputDir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "TransformedVideos")
         if (!outputDir.exists()) {
@@ -1117,11 +1081,11 @@ fun VideoEffectsScreen(navController: NavHostController) {
             "${context.packageName}.provider",
             outputFile
         )
-        outputVideoUri = determinedOutputUri // Postavi ovo odmah da se može prikazati u UI-ju ako je potrebno
+        outputVideoUri = determinedOutputUri
         Log.d("VideoEffectsScreen", "Izlazna datoteka: ${outputFile.absolutePath}, URI: $determinedOutputUri")
 
         coroutineScope.launch {
-            var localTransformer: Transformer? = null
+            var localTransformer: Transformer?
             var progressJob: Job? = null
 
             try {
@@ -1136,11 +1100,11 @@ fun VideoEffectsScreen(navController: NavHostController) {
                     )
                 }
                 if (applyContrast) {
-                    effectsList.add(Contrast(contrastValue)) // contrastValue je sada u rasponu [-1f, 1f]
+                    effectsList.add(Contrast(contrastValue))
                 }
 
                 if (applyBrightness) {
-                    effectsList.add(Brightness(brightnessValue)) // brightnessValue je sada u rasponu [-1f, 1f]
+                    effectsList.add(Brightness(brightnessValue))
                 }
 
                 if (applyMirror) {
@@ -1151,18 +1115,17 @@ fun VideoEffectsScreen(navController: NavHostController) {
                     .setEffects(Effects(listOf(), effectsList))
                     .build()
 
-                withContext(Dispatchers.Main) { // Osiguraj da se Transformer kreira i koristi na Main threadu
+                withContext(Dispatchers.Main) {
                     localTransformer = Transformer.Builder(context)
                         .setLooper(context.mainLooper)
                         .addListener(transformerListener)
                         .setVideoMimeType(MimeTypes.VIDEO_H264)
                         .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                        // .setMaxDelayBetweenMuxerSamplesMs(androidx.media3.common.C.TIME_UNSET)
                         .build()
 
                     progressJob = launch {
                         val progressHolder = androidx.media3.transformer.ProgressHolder()
-                        while (isActive && isTransforming) {
+                        while (isActive && isTransforming) { // isActive -> ako je corutina aktivna
                             val progressState = localTransformer?.getProgress(progressHolder) ?: Transformer.PROGRESS_STATE_UNAVAILABLE
                             if (progressState != Transformer.PROGRESS_STATE_UNAVAILABLE) {
                                 transformationProgress = progressHolder.progress / 100f
@@ -1184,7 +1147,6 @@ fun VideoEffectsScreen(navController: NavHostController) {
                             withDismissAction = true
                         )
                     }
-                    Log.e("VideoEffectsScreen", "Greška pri pripremi transformacije (vanjska)", e)
                     progressJob?.cancel()
                 }
             }
@@ -1197,7 +1159,7 @@ fun VideoEffectsScreen(navController: NavHostController) {
                 title = { Text("Video Efekti") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 }
             )
@@ -1226,7 +1188,6 @@ fun VideoEffectsScreen(navController: NavHostController) {
                         outputVideoUri = null
                         transformationProgress = 0f
                         isTransforming = false
-                        // Resetiraj efekte na defaultne vrijednosti
                         applyBrightness = false
                         brightnessValue = 0f
                         rotationDegrees = 0f
@@ -1242,7 +1203,6 @@ fun VideoEffectsScreen(navController: NavHostController) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Opcije za efekte (prikazuju se samo ako je video odabran)
             if (inputVideoUri != null) {
                 Text("Efekti:", style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Start))
                 Spacer(modifier = Modifier.height(8.dp))
@@ -1317,7 +1277,6 @@ fun VideoEffectsScreen(navController: NavHostController) {
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Prikaz videa
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1344,7 +1303,7 @@ fun VideoEffectsScreen(navController: NavHostController) {
                                     PlayerView(ctx).apply {
                                         player = previewExoPlayer
                                         useController = true
-                                        controllerShowTimeoutMs = 2000 // Kontrole se brže sakriju
+                                        controllerShowTimeoutMs = 2000
                                     }
                                 },
                                 modifier = Modifier.fillMaxSize()
@@ -1355,7 +1314,7 @@ fun VideoEffectsScreen(navController: NavHostController) {
                     }
                 }
 
-                // Transformirani video (prikazuje se nakon transformacije)
+                // Transformirani video
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.weight(1f)
@@ -1369,7 +1328,7 @@ fun VideoEffectsScreen(navController: NavHostController) {
                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (outputVideoUri != null && !isTransforming) { // Pokaži samo ako je spremljeno i ne transformira se
+                        if (outputVideoUri != null && !isTransforming) {
                             VideoPreview(uri = outputVideoUri!!, modifier = Modifier.fillMaxSize())
                         } else {
                             Text(if (isTransforming) "Transformiram..." else "Nema spremljenog videa", style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
@@ -1380,7 +1339,7 @@ fun VideoEffectsScreen(navController: NavHostController) {
                             onClick = {
                                 val shareIntent: Intent = Intent().apply {
                                     action = Intent.ACTION_SEND
-                                    putExtra(Intent.EXTRA_STREAM, outputVideoUri) // outputVideoUri je content URI
+                                    putExtra(Intent.EXTRA_STREAM, outputVideoUri)
                                     type = context.contentResolver.getType(outputVideoUri!!) ?: "video/mp4"
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }
@@ -1397,16 +1356,16 @@ fun VideoEffectsScreen(navController: NavHostController) {
     }
 }
 
-// Pomoćna Composable funkcija za prikaz videa (ista kao prije, ali može se prilagoditi)
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun VideoPreview(uri: Uri, modifier: Modifier = Modifier, autoPlay: Boolean = false) {
     val context = LocalContext.current
-    val exoPlayer = remember(uri) { // Ponovno kreiraj player ako se URI promijeni
+
+    val exoPlayer = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
             repeatMode = Player.REPEAT_MODE_ONE
-            playWhenReady = autoPlay // Kontroliraj auto-play
+            playWhenReady = autoPlay
             prepare()
         }
     }
@@ -1422,43 +1381,38 @@ fun VideoPreview(uri: Uri, modifier: Modifier = Modifier, autoPlay: Boolean = fa
         modifier = modifier.fillMaxWidth()
     )
 
-    DisposableEffect(exoPlayer) { // Osiguraj da se player oslobodi
+    DisposableEffect(exoPlayer) {
         onDispose {
             exoPlayer.release()
         }
     }
 }
 
-// TOP-LEVEL Composable funkcija
-@OptIn(ExperimentalMaterial3Api::class) // Dodaj ExperimentalFoundationApi za combinedClickable
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PhotoViewerScreen(
     navController: NavHostController
 ) {
+
     val context = LocalContext.current
+
     val photoViewModel: PhotoViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                @Suppress("UNCHECKED_CAST")
                 return PhotoViewModel(context.applicationContext as Application) as T
             }
         }
     )
-    // Dohvati stanja iz ViewModela
-    // Ne trebamo 'remember' za ova stanja jer ih ViewModel drži i preživljava rekompozicije
-    // i promjene konfiguracije. SnapshotStateList će automatski triggerati rekompoziciju.
-    val imageUris = photoViewModel.imageUris
-    val selectedImagesForDeletion = photoViewModel.selectedImagesForDeletion
+
+    val imageUris = photoViewModel.imageUris // lista URI-ja slika koje su prikazane u galeriji
+    val selectedImagesForDeletion = photoViewModel.selectedImagesForDeletion // lista slika koje je korisnik označio za brisanje
 
     var showDeleteConfirmationDialog by remember { mutableStateOf(false) }
 
-    // Moderni Photo Picker
     val multiplePhotoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10),
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10), // maksimalno 10 slika za odabiranje iz galerije
         onResult = { uris ->
             if (uris.isNotEmpty()) {
-                Log.d("PhotoPicker", "Odabrano URI-ja: ${uris.size}")
-                // Opcionalno, obavijesti korisnika
                 val existingUriStrings = imageUris.map { it.toString() }.toSet()
                 val newUris = uris.filter { it.toString() !in existingUriStrings }
 
@@ -1484,7 +1438,6 @@ fun PhotoViewerScreen(
                         Toast.makeText(context, "${newUris.size} slika dodano. Ostale su već u galeriji.", Toast.LENGTH_SHORT).show()
                     }
                     else -> {
-                        // Sve su nove – ne moraš prikazivati ništa
                     }
                 }
             }
@@ -1502,7 +1455,7 @@ fun PhotoViewerScreen(
                         }
                     } else {
                         IconButton(onClick = { navController.popBackStack() }) {
-                            Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Natrag")
                         }
                     }
                 },
@@ -1554,13 +1507,12 @@ fun PhotoViewerScreen(
                     itemsIndexed(imageUris, key = { _, uri -> uri.toString() }) { _, uri ->
                         GalleryImageItem(
                             uri = uri,
-                            isInDeleteMode = photoViewModel.isInDeleteMode, // Koristi iz ViewModela
-                            isSelectedForDeletion = selectedImagesForDeletion.contains(uri), // Koristi iz ViewModela
+                            isInDeleteMode = photoViewModel.isInDeleteMode,
+                            isSelectedForDeletion = selectedImagesForDeletion.contains(uri),
                             onImageClick = {
                                 if (photoViewModel.isInDeleteMode) {
                                     photoViewModel.toggleImageSelectionForDeletion(uri)
                                 } else {
-                                    Log.d("PhotoViewer", "Kliknuta slika: $uri")
                                     val encodedUri = Uri.encode(uri.toString())
                                     navController.navigate("image_detail_screen/$encodedUri")
                                 }
@@ -1617,7 +1569,7 @@ fun GalleryImageItem(
         .clip(RoundedCornerShape(8.dp))
         .combinedClickable(
             onClick = onImageClick,
-            onLongClick = onImageLongClick // Omogući dugi klik
+            onLongClick = onImageLongClick
         )
 
     Box(
@@ -1632,9 +1584,8 @@ fun GalleryImageItem(
             contentDescription = "Slika iz galerije",
             contentScale = ContentScale.Crop, // Crop da popuni kvadrat
             modifier = Modifier.fillMaxSize(),
-            // Placeholder dok se slika učitava
-            placeholder = painterResource(id = R.drawable.ic_launcher_background), // Zamijenite s vašim placeholderom
-            error = painterResource(id = R.drawable.ic_launcher_foreground) // Zamijenite slikom za grešku
+            placeholder = painterResource(id = R.drawable.ic_launcher_background),
+            error = painterResource(id = R.drawable.ic_launcher_foreground)
         )
 
         if (isInDeleteMode) {
@@ -1661,7 +1612,6 @@ fun GalleryImageItem(
     }
 }
 
-// TOP-LEVEL Composable funkcija
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ImageDetailScreen(navController: NavHostController, imageUri: Uri) {
@@ -1669,7 +1619,7 @@ fun ImageDetailScreen(navController: NavHostController, imageUri: Uri) {
 
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
-    var rotation by remember { mutableFloatStateOf(0f) } // Dodano za potpunost iz videa, ali može se izostaviti
+    var rotation by remember { mutableFloatStateOf(0f) }
 
     Scaffold(
         topBar = {
@@ -1677,10 +1627,10 @@ fun ImageDetailScreen(navController: NavHostController, imageUri: Uri) {
                 title = { Text("Detalji Slike") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Natrag")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Natrag")
                     }
                 },
-                actions = { // Gumb za resetiranje zooma i pozicije
+                actions = { // Gumb za resetiranje zoom-a i pozicije
                     IconButton(onClick = {
                         scale = 1f
                         offset = Offset.Zero
@@ -1692,22 +1642,17 @@ fun ImageDetailScreen(navController: NavHostController, imageUri: Uri) {
             )
         }
     ) { innerPadding ->
-        BoxWithConstraints( // Koristimo BoxWithConstraints da dobijemo maksimalne dimenzije
+        BoxWithConstraints( // Koristi se BoxWithConstraints za dobivanje maksimalne dimenzije
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
         ) {
             val state = rememberTransformableState { zoomChange, panChange, rotationChange ->
-                scale = (scale * zoomChange).coerceIn(1f, 5f) // Ograniči zoom od 1x do 5x
+                scale = (scale * zoomChange).coerceIn(1f, 5f) // Zoom od 1x do 5x
 
-                rotation += rotationChange // Ako želite i rotaciju
+                rotation += rotationChange
 
                 // Logika za ograničavanje pomaka (panning) da slika ne izađe izvan ekrana
-                // Ovo je složeniji dio koji zahtijeva izračunavanje granica
-                // na temelju trenutne skale i dimenzija slike/kontejnera.
-                // Za jednostavnost, osnovni pomak:
-                // offset += panChange
-                // Detaljnija implementacija za ograničavanje pomaka (iz videa [3]):
                 val extraWidth = (scale - 1) * constraints.maxWidth
                 val extraHeight = (scale - 1) * constraints.maxHeight
 
@@ -1728,14 +1673,14 @@ fun ImageDetailScreen(navController: NavHostController, imageUri: Uri) {
                 contentDescription = "Prikaz slike preko cijelog zaslona s mogućnošću zumiranja",
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { // Primijeni transformacije
+                    .graphicsLayer { // Primijenjivanje transformacija
                         scaleX = scale
                         scaleY = scale
                         translationX = offset.x
                         translationY = offset.y
                         rotationZ = rotation
                     }
-                    .transformable(state = state), // Omogući transformacije (pinch, pan, rotate)
+                    .transformable(state = state), // Omogućavanje transformacija (pinch, pan, rotate)
                 contentScale = ContentScale.Fit
             )
         }

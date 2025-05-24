@@ -10,17 +10,19 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 
-class MediaPlaybackService : MediaSessionService() {
+class MediaPlaybackService : MediaSessionService() { // MediaSessionService - upravlja MediaSession objektom, služi za pokretanje i upravljanje reprodukcijom u pozadini.
+
+    // Omogućava kontrolu i komuniciranje s media playerom
     private var mediaSession: MediaSession? = null
+
     private lateinit var player: ExoPlayer
 
     override fun onCreate() {
         super.onCreate()
-        Log.d("MediaPlaybackService", "onCreate called")
 
         player = ExoPlayer.Builder(this)
-            .setAudioAttributes(AudioAttributes.DEFAULT, true) // handleAudioFocus = true
-            .setHandleAudioBecomingNoisy(true)
+            .setAudioAttributes(AudioAttributes.DEFAULT, true) // postavlja audio atribute za reprodukciju (glasnoća, tip audio toka...) i audio fokus
+            .setHandleAudioBecomingNoisy(true) // pauzira ako npr. korisnik isključi slušalice
             .build()
 
         player.addListener(object : Player.Listener {
@@ -31,11 +33,12 @@ class MediaPlaybackService : MediaSessionService() {
                 Log.d("MediaPlaybackService", "Player isPlaying: $isPlaying")
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                super.onMediaItemTransition(mediaItem, reason)
+                super.onMediaItemTransition(mediaItem, reason) // prelazak na novi medijski sadržaj
                 Log.d("MediaPlaybackService", "Service MediaItem transitioned: ${mediaItem?.mediaId}")
             }
         })
 
+        // Intent za pokretanje MainActivityja kada se klikne na notifikaciju (ili neki UI element vezan za sjednicu)
         val intent = Intent(this, MainActivity::class.java).apply {
             action = Intent.ACTION_MAIN
             addCategory(Intent.CATEGORY_LAUNCHER)
@@ -48,40 +51,28 @@ class MediaPlaybackService : MediaSessionService() {
             this,
             0,
             intent,
+            // FLAG_IMMUTABLE -> intent se ne može mijenjati nakon stvaranja, FLAG_UPDATE_CURRENT -> ako već postoji PendingIntent, ažuriraj ga novim podacima
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         mediaSession = MediaSession.Builder(this, player)
-            .setSessionActivity(sessionActivityPendingIntent)
+            .setSessionActivity(sessionActivityPendingIntent) // Povezivanje PendingIntent-a (za klikanje na notifikaciju ili kontrolu sesije)
             .build()
 
-        // Ako želite da se notifikacija odmah pojavi i da servis bude foreground,
-        // možete to eksplicitno postaviti ovdje ili kroz MediaNotification.Provider.
-        // Media3 to uglavnom rješava automatski kada player počne svirati.
     }
 
+    // Kada klijent (npr. notifikacija) želi dobiti pristup MediaSession
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
-        Log.d("MediaPlaybackService", "onGetSession called for ${controllerInfo.packageName}")
         return mediaSession
     }
 
     override fun onDestroy() {
-        Log.d("MediaPlaybackService", "onDestroy called")
         mediaSession?.run {
-            this.player.release() // Player je dio session-a
+            this.player.release()
             release()
             mediaSession = null
         }
         super.onDestroy()
     }
 
-    // Opcionalno: Prilagodba ponašanja kada se aplikacija ukloni iz nedavnih zadataka
-    // override fun onTaskRemoved(rootIntent: Intent?) {
-    //     val currentPlayer = mediaSession?.player
-    //     if (currentPlayer != null && (!currentPlayer.playWhenReady || currentPlayer.mediaItemCount == 0)) {
-    //         // Zaustavi servis ako ne svira ili nema pjesama
-    //         stopSelf()
-    //     }
-    //     // Inače, ako svira, servis će nastaviti raditi (defaultno ponašanje)
-    // }
 }

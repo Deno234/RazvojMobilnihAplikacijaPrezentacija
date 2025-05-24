@@ -7,11 +7,10 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-// Extension na Context
-val Context.photoDataStore by preferencesDataStore(name = "photo_prefs")
+val Context.photoDataStore by preferencesDataStore(name = "photo_prefs") // Stvara se DataStore datoteka s imenom photo_prefs (u nju se spremaju podaci - URI adrese)
 
 object PhotoPreferenceKeys {
-    val PHOTO_URIS = stringSetPreferencesKey("photo_uris")
+    val PHOTO_URIS = stringSetPreferencesKey("photo_uris") // Ključ pod kojim će se spremati podaci
 }
 
 suspend fun savePhotoUris(context: Context, uris: List<String>) {
@@ -20,7 +19,7 @@ suspend fun savePhotoUris(context: Context, uris: List<String>) {
     }
 }
 
-fun getPhotoUris(context: Context): Flow<List<String>> {
+fun getPhotoUris(context: Context): Flow<List<String>> { // Kada god se podaci promijene, emitira se nova lista URI-jeva
     return context.photoDataStore.data.map { prefs ->
         prefs[PhotoPreferenceKeys.PHOTO_URIS]?.toList() ?: emptyList()
     }
