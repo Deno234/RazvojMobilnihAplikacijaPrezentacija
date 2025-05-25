@@ -355,9 +355,9 @@ fun AudioPlayerScreen(navController: NavHostController) {
         }
     }
 
-    val displayTitle = currentMediaItemForPlayer?.mediaMetadata?.title?.toString() // Title u metadata (npr. MP3 tag)
-        ?: selectedFileUri?.lastPathSegment // Title iz URI-ja ako je lokalno odabrana datoteka
-        ?: if (inputUrl.isNotBlank() && currentMediaItemForPlayer?.mediaId == inputUrl) inputUrl.substringAfterLast('/') else null // Naziv iz URL-a
+    val displayTitle = currentMediaItemForPlayer?.mediaMetadata?.title?.toString() // Title u metadata (npr. MP3 tag title)
+        ?: selectedFileUri?.lastPathSegment // Title iz URI-ja ako je lokalno odabrana datoteka (npr. content://downloads/song.mp3 -> song.mp3)
+        ?: if (inputUrl.isNotBlank()) inputUrl.substringAfterLast('/') else null // Naziv iz URL-a
             ?: "Nema učitanog medija"
 
     Scaffold( // glavni container za ekran s elementima poput TopBar, BottomBar...
@@ -584,7 +584,7 @@ fun VideoPlayerScreen(navController: NavHostController) {
 
     val displayTitle = currentMediaItemForPlayer?.mediaMetadata?.title?.toString()
         ?: selectedFileUri?.lastPathSegment
-        ?: if (inputUrl.isNotBlank() && currentMediaItemForPlayer?.mediaId == inputUrl) inputUrl.substringAfterLast('/') else null
+        ?: if (inputUrl.isNotBlank()) inputUrl.substringAfterLast('/') else null
             ?: "Nema učitanog videa"
 
     Scaffold(
@@ -805,7 +805,7 @@ fun BackgroundAudioScreen(navController: NavHostController) {
     )
 
     val displayTitle = mediaController?.currentMediaItem?.mediaMetadata?.title?.toString()
-        ?: mediaController?.currentMediaItem?.mediaId?.substringAfterLast('/')
+        ?: if (inputUrl.isNotBlank()) inputUrl.substringAfterLast('/') else null
         ?: "Nema učitanog medija"
 
     Scaffold(
@@ -1105,6 +1105,7 @@ fun VideoEffectsScreen(navController: NavHostController) {
                             .build()
                     )
                 }
+
                 if (applyContrast) {
                     effectsList.add(Contrast(contrastValue))
                 }
@@ -1426,10 +1427,8 @@ fun PhotoViewerScreen(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { isGranted: Boolean ->
             if (isGranted) {
-                // Dozvola je odobrena, postavi stanje za pokretanje kamere
                 launchCameraActionPending = true
             } else {
-                // Korisnik je odbio dozvolu
                 Toast.makeText(context, "Dozvola za kameru je odbijena.", Toast.LENGTH_SHORT).show()
             }
         }
@@ -1440,10 +1439,8 @@ fun PhotoViewerScreen(
         onResult = { success ->
             val uriToProcess = capturedImageUri.value // URI koji je korišten za pokretanje kamere
 
-            Log.d("PhotoViewerScreen", "cameraLauncher onResult: success = $success, uriToProcess = $uriToProcess") // DODAJTE LOG
-
             if (success && uriToProcess != null) {
-                Log.d("PhotoViewerScreen", "Slika uspješno snimljena, obrađujem URI: $uriToProcess") // DODAJTE LOG
+                Log.d("PhotoViewerScreen", "Slika uspješno snimljena, obrađujem URI: $uriToProcess")
                 // Za Android Q i novije, označi sliku kao da više nije pending
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val updateValues = ContentValues().apply {
@@ -1451,12 +1448,12 @@ fun PhotoViewerScreen(
                     }
                     try {
                         val updatedRows = context.contentResolver.update(uriToProcess, updateValues, null, null)
-                        Log.d("PhotoViewerScreen", "MediaStore.Images.Media.IS_PENDING postavljen na 0. Ažurirano redaka: $updatedRows") // DODAJTE LOG
+                        Log.d("PhotoViewerScreen", "MediaStore.Images.Media.IS_PENDING postavljen na 0. Ažurirano redaka: $updatedRows")
                         if (updatedRows == 0) {
                             Log.w("PhotoViewerScreen", "UPOZORENJE: IS_PENDING nije ažuriran, slika možda neće biti vidljiva.")
                         }
                     } catch (e: Exception) {
-                        Log.e("PhotoViewerScreen", "Greška pri ažuriranju IS_PENDING za URI: $uriToProcess", e) // DODAJTE LOG ZA GREŠKU
+                        Log.e("PhotoViewerScreen", "Greška pri ažuriranju IS_PENDING za URI: $uriToProcess", e)
                     }
                 }
 
@@ -1465,27 +1462,27 @@ fun PhotoViewerScreen(
                         uriToProcess,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION
                     )
-                    Log.d("PhotoViewerScreen", "Trajna dozvola dobivena za URI: $uriToProcess") // DODAJTE LOG
+                    Log.d("PhotoViewerScreen", "Trajna dozvola dobivena za URI: $uriToProcess")
                 } catch (e: SecurityException) {
                     Log.e("PhotoViewerScreen", "Nije uspjelo dobivanje trajne dozvole za URI: $uriToProcess", e)
                 }
 
-                photoViewModel.addUris(listOf(uriToProcess)) // Provjerite radi li ovo kako treba
-                Log.d("PhotoViewerScreen", "URI dodan u photoViewModel: $uriToProcess") // DODAJTE LOG
+                photoViewModel.addUris(listOf(uriToProcess))
+                Log.d("PhotoViewerScreen", "URI dodan u photoViewModel: $uriToProcess")
                 Toast.makeText(context, "Slika snimljena i dodana u galeriju", Toast.LENGTH_SHORT).show()
 
             } else if (uriToProcess != null) {
                 // Ako slikanje nije uspjelo, ali je URI kreiran (bio je pending), obriši ga
-                Log.w("PhotoViewerScreen", "Slikanje neuspješno ili otkazano. Brišem URI: $uriToProcess") // DODAJTE LOG
+                Log.w("PhotoViewerScreen", "Slikanje neuspješno ili otkazano. Brišem URI: $uriToProcess")
                 try {
                     val deletedRows = context.contentResolver.delete(uriToProcess, null, null)
-                    Log.d("PhotoViewerScreen", "Pending URI obrisan. Obrisano redaka: $deletedRows") // DODAJTE LOG
+                    Log.d("PhotoViewerScreen", "Pending URI obrisan. Obrisano redaka: $deletedRows")
                 } catch (e: Exception) {
-                    Log.e("PhotoViewerScreen", "Greška pri brisanju pending URI-ja: $uriToProcess", e) // DODAJTE LOG ZA GREŠKU
+                    Log.e("PhotoViewerScreen", "Greška pri brisanju pending URI-ja: $uriToProcess", e)
                 }
                 Toast.makeText(context, "Slikanje otkazano ili neuspješno.", Toast.LENGTH_SHORT).show()
             } else {
-                Log.w("PhotoViewerScreen", "Slikanje neuspješno, URI je null.") // DODAJTE LOG
+                Log.w("PhotoViewerScreen", "Slikanje neuspješno, URI je null.")
             }
             // Očisti capturedImageUri.value bez obzira na ishod da se pripremi za sljedeće slikanje
             capturedImageUri.value = null
@@ -1495,9 +1492,9 @@ fun PhotoViewerScreen(
     LaunchedEffect(launchCameraActionPending) {
         if (launchCameraActionPending) {
             val newUri = createImageUriWithFileProvider(context)
-            capturedImageUri.value = newUri // Važno: postaviti prije pokretanja kamere
+            capturedImageUri.value = newUri
             if (newUri != null) {
-                cameraLauncher.launch(newUri) // cameraLauncher je vaš postojeći launcher za TakePicture
+                cameraLauncher.launch(newUri)
             } else {
                 Toast.makeText(context, "Greška pri stvaranju URI-ja slike.", Toast.LENGTH_SHORT).show()
             }
